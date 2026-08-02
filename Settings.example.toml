@@ -1,0 +1,53 @@
+# Copy to `Settings.toml` and set a real `rpc_url`.
+# Asset ids and token addresses use lowercase hex; the chain namespace prefixes them.
+
+api_bind = "0.0.0.0:8080"
+fiat_provider_url = "https://api.coingecko.com/api/v3"
+
+# Price-feed tuning (defaults shown; uncomment to override):
+# binance_ws_url = "wss://stream.binance.com:9443"
+# price_refresh_secs = 30      # CoinGecko poll interval
+# price_staleness_secs = 120   # a cached price older than this is treated as missing
+
+# `binance_symbol` opts an asset into the live Binance feed (preferred over
+# CoinGecko when fresh); omit it for the long tail priced by CoinGecko alone.
+
+[[assets]]
+id = "ethereum:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+decimals = 6
+symbol = "USDC"
+price_id = "usd-coin"
+
+[[assets]]
+id = "ethereum:0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+decimals = 18
+symbol = "WETH"
+price_id = "weth"
+binance_symbol = "ETHUSDT"
+
+[[assets]]
+id = "ethereum:0x6b175474e89094c44da98b954eedeac495271d0f"
+decimals = 18
+symbol = "DAI"
+price_id = "dai"
+
+[[chains]]
+chain_id = "ethereum"
+rpc_url = "https://YOUR_RPC_ENDPOINT"
+sync_interval_ms = 12000
+scan_interval_ms = 6000
+max_hops = 16
+input_usd = "1000"
+start_assets = [
+    "ethereum:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "ethereum:0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+]
+tracked_tokens = [
+    "ethereum:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "ethereum:0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "ethereum:0x6b175474e89094c44da98b954eedeac495271d0f",
+]
+
+[chains.uniswap_v3]
+factory = "0x1f98431c8ad98523631ae4a59f267346ea31f984"
+fee_tiers = [500, 3000, 10000]

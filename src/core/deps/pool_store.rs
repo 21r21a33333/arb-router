@@ -83,6 +83,11 @@ impl PoolSnapshot {
     pub fn taken_at(&self) -> OffsetDateTime {
         self.taken_at
     }
+
+    /// Number of distinct pools in the snapshot.
+    pub fn pool_count(&self) -> usize {
+        self.by_id.len()
+    }
 }
 
 pub trait PoolStore: Send + Sync {

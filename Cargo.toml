@@ -28,6 +28,12 @@ uniswap_v3_math = { version = "0.6", default-features = false }
 # Curve AMM math (all 12 StableSwap/CryptoSwap variants), wei-exact vs on-chain get_dy.
 curve-math = { git = "https://github.com/sunce86/curve-math", features = ["swap"] }
 alloy = { version = "2.2.0", features = ["contract", "provider-http"] }
+moka = { version = "0.12.15", features = ["future"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
+axum = "0.8.9"
+tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots", "connect"] }
+futures-util = "0.3.33"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util", "macros"] }
+wiremock = "0.6.5"

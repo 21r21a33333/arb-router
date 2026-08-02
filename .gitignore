@@ -1,2 +1,5 @@
 /target
 /.superpowers
+
+# local config with RPC endpoints
+/Settings.toml
