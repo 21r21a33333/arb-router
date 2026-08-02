@@ -359,3 +359,19 @@ Fail-fast on bad config.
   - `Valuation` — `price(asset)`; the app computes value via the `AssetRegistry`.
   - `Notifier` — write-only, per-chain replace, composite fan-out, isolated failures.
   - `ChainReader` — `latest_block` + block-pinned, chunked `call_batch` with per-call failure.
+
+## 15. v1 refinements (post-spec)
+- **Fixed-USD input, not optimal sizing.** v1 quotes each path at one configured USD size
+  (`EngineConfig.input_usd`, default $1000) converted to base units of the path's source asset via its
+  price. Golden-section sizing is dropped for v1 (revisit at execution). `EngineConfig` is
+  `{ start_assets, max_hops, input_usd }`; beam width and staleness are constant defaults.
+- **No hard path cap in v1.** `MAX_PATHS_PER_SCAN` was removed to observe true path counts;
+  `BEAM_WIDTH` (per-node fan-out) is the only remaining bound. A governor returns before high-`max_hops`
+  scans run on large live graphs.
+- **Chain scope is a data/config choice, not a code constraint.** The engine (graph/finder/detect/rank)
+  is venue-agnostic: a chain pool, CEX market, or bridge is just a `Pool` edge, and assets are
+  namespaced (`chain:token`). v1 runs single-chain only because the snapshot holds one chain's AMM pools.
+  Cross-chain / CEX is additive — add bridge/CEX `Pool` adapters + a global (multi-venue) snapshot + an
+  atomicity tag on `Opportunity`; the engine does not change. The only per-chain seams are
+  `PoolStore::snapshot(chain)` / `Scanner.chain` (scope) and `Opportunity.chain` (a label). A cross-venue
+  hit is a non-atomic signal (inventory + timing), not a one-tx profit.
