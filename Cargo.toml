@@ -27,6 +27,7 @@ alloy-primitives = { version = "1", default-features = false }
 uniswap_v3_math = { version = "0.6", default-features = false }
 # Curve AMM math (all 12 StableSwap/CryptoSwap variants), wei-exact vs on-chain get_dy.
 curve-math = { git = "https://github.com/sunce86/curve-math", features = ["swap"] }
+alloy = { version = "2.2.0", features = ["contract", "provider-http"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util", "macros"] }
