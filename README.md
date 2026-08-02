@@ -99,8 +99,13 @@ Core logic is tested against fakes with zero network. Live integrations
 | M2 — detection engine | ✅ |
 | M3 — on-chain state sync (Uniswap V3) | ✅ |
 | M4 — wiring + read API + live pricing | ✅ |
-| M5 — breadth (V2/V4/Curve/Aerodrome, multi-chain) | ⏳ |
+| M5 — breadth: sync adapters for Uniswap V2 + Curve StableSwap, multi-chain | ✅ |
+| Uniswap V4 + Aerodrome sync adapters | deferred |
 | Execution | future |
+
+Sync adapters live today for **Uniswap V2, Uniswap V3, and Curve StableSwap**
+(quote math for V4 and Curve-Crypto also exists — they just need `Exchange`
+adapters). Multiple chains each run their own sync + scan loop.
 
 ## License
 
