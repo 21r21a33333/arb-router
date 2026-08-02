@@ -10,6 +10,7 @@ use alloy::primitives::Address;
 
 use crate::adapters::api::{self, ApiState};
 use crate::adapters::chain_reader::MulticallChainReader;
+use crate::adapters::exchanges::uniswap::v2_exchange::UniswapV2Exchange;
 use crate::adapters::exchanges::uniswap::v3_exchange::UniswapV3Exchange;
 use crate::adapters::notifier::{CompositeNotifier, LogNotifier, MemoryNotifier};
 use crate::adapters::pool_store::{ArcSwapPoolStore, SyncWorker};
@@ -187,9 +188,10 @@ fn spawn_chain(
     Ok(())
 }
 
-/// The exchanges configured on a chain (just Uniswap V3 in v1).
+/// The exchanges configured on a chain.
 fn build_exchanges(chain: &ChainId, c: &ChainSettings) -> Vec<Arc<dyn Exchange>> {
     let mut exchanges: Vec<Arc<dyn Exchange>> = Vec::new();
+
     if let Some(v3) = &c.uniswap_v3 {
         match v3.factory.parse::<Address>() {
             Ok(factory) => exchanges.push(Arc::new(UniswapV3Exchange::new(
@@ -203,6 +205,21 @@ fn build_exchanges(chain: &ChainId, c: &ChainSettings) -> Vec<Arc<dyn Exchange>>
             }
         }
     }
+
+    if let Some(v2) = &c.uniswap_v2 {
+        match v2.factory.parse::<Address>() {
+            Ok(factory) => exchanges.push(Arc::new(UniswapV2Exchange::new(
+                "uniswap_v2",
+                chain.clone(),
+                factory,
+                v2.fee_bps,
+            ))),
+            Err(_) => {
+                tracing::warn!(chain = chain.as_str(), factory = %v2.factory, "invalid uniswap_v2 factory address")
+            }
+        }
+    }
+
     exchanges
 }
 

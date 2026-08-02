@@ -23,12 +23,14 @@ use alloy::sol;
 use alloy::sol_types::SolCall;
 use async_trait::async_trait;
 
+use super::ordered;
 use super::v3::{TickInfo, UniswapV3Pool};
-use crate::core::deps::chain_reader::{ChainReadError, ChainReader};
+use crate::adapters::exchanges::{asset_address, call, pool_address, read_err};
+use crate::core::deps::chain_reader::ChainReader;
 use crate::core::deps::exchange::{Exchange, ExchangeError};
 use crate::core::deps::pool::Pool;
 use crate::primitives::asset::{AssetId, ChainId};
-use crate::primitives::chain::{BlockId, Bytes, Call, CallResult};
+use crate::primitives::chain::{BlockId, Call, CallResult};
 use crate::primitives::pool::{ExchangeId, PoolKey};
 
 sol! {
@@ -350,47 +352,7 @@ fn build_pools(
         .collect()
 }
 
-// ─── small helpers ──────────────────────────────────────────────────────────
-
-/// A `Call` to `target` carrying `calldata`.
-fn call(target: Address, calldata: Vec<u8>) -> Call {
-    Call {
-        target: target.to_string(),
-        calldata: Bytes(calldata),
-    }
-}
-
-/// Wrap a chain-read failure as an exchange read error.
-fn read_err(err: ChainReadError) -> ExchangeError {
-    ExchangeError::Read(err.to_string())
-}
-
-/// The `(token0, token1)` pair sorted by address, as Uniswap orders a pool's tokens.
-fn ordered(a: &AssetId, b: &AssetId) -> Result<(AssetId, AssetId), ExchangeError> {
-    match asset_address(a)? < asset_address(b)? {
-        true => Ok((a.clone(), b.clone())),
-        false => Ok((b.clone(), a.clone())),
-    }
-}
-
-/// The pool address stored on a `PoolKey`, parsed.
-fn pool_address(key: &PoolKey) -> Result<Address, ExchangeError> {
-    key.address
-        .parse::<Address>()
-        .map_err(|_| ExchangeError::Decode(format!("pool address `{}`", key.address)))
-}
-
-/// Parse the address out of an `AssetId` (`"chain:0x…"`).
-fn asset_address(asset: &AssetId) -> Result<Address, ExchangeError> {
-    asset
-        .as_str()
-        .split(':')
-        .nth(1)
-        .and_then(|hex| hex.parse::<Address>().ok())
-        .ok_or_else(|| {
-            ExchangeError::Decode(format!("asset id `{}` is not `chain:0x…`", asset.as_str()))
-        })
-}
+// ─── uniswap V3 helpers ───────────────────────────────────────────────────────
 
 /// The tick spacing for a Uniswap V3 fee tier (fee in millionths).
 fn tick_spacing(fee: u32) -> i32 {
@@ -445,7 +407,8 @@ fn decode_tick(data: &[u8]) -> Result<(u128, i128), ExchangeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::chain::BatchOutput;
+    use crate::core::deps::chain_reader::ChainReadError;
+    use crate::primitives::chain::{BatchOutput, Bytes};
     use alloy::primitives::address;
     use alloy::primitives::aliases::{I56, U160};
 

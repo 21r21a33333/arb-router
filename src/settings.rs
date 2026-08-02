@@ -67,6 +67,9 @@ pub struct ChainSettings {
     /// Uniswap V3 deployment on this chain, if present.
     #[serde(default)]
     pub uniswap_v3: Option<UniswapV3Settings>,
+    /// Uniswap V2 (or V2-fork) deployment on this chain, if present.
+    #[serde(default)]
+    pub uniswap_v2: Option<UniswapV2Settings>,
 }
 
 /// A Uniswap V3 deployment: its factory and the fee tiers to scan.
@@ -74,6 +77,13 @@ pub struct ChainSettings {
 pub struct UniswapV3Settings {
     pub factory: String,
     pub fee_tiers: Vec<u32>,
+}
+
+/// A Uniswap V2 deployment: its factory and swap fee in basis points.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UniswapV2Settings {
+    pub factory: String,
+    pub fee_bps: u32,
 }
 
 impl Settings {

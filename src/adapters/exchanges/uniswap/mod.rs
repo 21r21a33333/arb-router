@@ -5,14 +5,25 @@
 //! (`simulate_v3_swap`, `TickInfo`) lives in [`v3`] and is reused by [`v4`].
 
 pub mod v2;
+pub mod v2_exchange;
 pub mod v3;
 pub mod v3_exchange;
 pub mod v4;
 
 use alloy_primitives::U256;
 
-use super::{amount_to_u256, u256_to_amount};
+use super::{amount_to_u256, asset_address, u256_to_amount};
+use crate::core::deps::exchange::ExchangeError;
 use crate::primitives::asset::{Amount, AssetId, Pair};
+
+/// The `(token0, token1)` pair sorted by address, as Uniswap orders a pool's
+/// tokens. Shared by the V2 and V3 exchange adapters.
+pub(crate) fn ordered(a: &AssetId, b: &AssetId) -> Result<(AssetId, AssetId), ExchangeError> {
+    match asset_address(a)? < asset_address(b)? {
+        true => Ok((a.clone(), b.clone())),
+        false => Ok((b.clone(), a.clone())),
+    }
+}
 
 /// Resolve swap direction for a 2-asset pool from a `Pair`.
 ///
