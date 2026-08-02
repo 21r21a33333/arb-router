@@ -10,6 +10,7 @@ use alloy::primitives::Address;
 
 use crate::adapters::api::{self, ApiState};
 use crate::adapters::chain_reader::MulticallChainReader;
+use crate::adapters::exchanges::curve::exchange::{CurveExchange, CurvePoolConfig};
 use crate::adapters::exchanges::uniswap::v2_exchange::UniswapV2Exchange;
 use crate::adapters::exchanges::uniswap::v3_exchange::UniswapV3Exchange;
 use crate::adapters::notifier::{CompositeNotifier, LogNotifier, MemoryNotifier};
@@ -19,13 +20,15 @@ use crate::adapters::valuation::binance::BinanceFeed;
 use crate::adapters::valuation::coingecko::CoinGeckoFeed;
 use crate::adapters::valuation::{CachedValuation, PriceStore};
 use crate::core::application::config::EngineConfig;
+use crate::core::application::evaluation::detect::AssetRegistry;
 use crate::core::application::scanner::Scanner;
 use crate::core::deps::chain_reader::ChainReader;
 use crate::core::deps::exchange::Exchange;
 use crate::core::deps::notifier::Notifier;
 use crate::core::deps::pool_store::PoolStore;
 use crate::primitives::asset::{AssetId, ChainId, Usd};
-use crate::settings::{ChainSettings, Settings};
+use crate::settings::{ChainSettings, CurveSettings, Settings};
+use curve_adapter::CurveVariant;
 
 /// Calls per Multicall3 round trip.
 const CHUNK_SIZE: usize = 50;
@@ -160,12 +163,12 @@ fn spawn_chain(
     reader: &Arc<dyn ChainReader>,
     valuation: &Arc<CachedValuation>,
     notifier: &Arc<CompositeNotifier>,
-    registry: &crate::core::application::evaluation::detect::AssetRegistry,
+    registry: &AssetRegistry,
 ) -> eyre::Result<()> {
     let worker = SyncWorker {
         chain: chain.clone(),
         store: store.clone(),
-        exchanges: build_exchanges(&chain, c),
+        exchanges: build_exchanges(&chain, c, registry),
         reader: reader.clone(),
         tracked_tokens: parse_assets(&c.tracked_tokens)?,
         interval: Duration::from_millis(c.sync_interval_ms),
@@ -189,7 +192,11 @@ fn spawn_chain(
 }
 
 /// The exchanges configured on a chain.
-fn build_exchanges(chain: &ChainId, c: &ChainSettings) -> Vec<Arc<dyn Exchange>> {
+fn build_exchanges(
+    chain: &ChainId,
+    c: &ChainSettings,
+    registry: &AssetRegistry,
+) -> Vec<Arc<dyn Exchange>> {
     let mut exchanges: Vec<Arc<dyn Exchange>> = Vec::new();
 
     if let Some(v3) = &c.uniswap_v3 {
@@ -220,7 +227,60 @@ fn build_exchanges(chain: &ChainId, c: &ChainSettings) -> Vec<Arc<dyn Exchange>>
         }
     }
 
+    if let Some(curve) = &c.curve
+        && let Some(exchange) = build_curve(chain, curve, registry)
+    {
+        exchanges.push(exchange);
+    }
+
     exchanges
+}
+
+/// Build the Curve exchange from configured pools, resolving each pool's coins
+/// and decimals against the asset registry. Pools that don't resolve are skipped.
+fn build_curve(
+    chain: &ChainId,
+    curve: &CurveSettings,
+    registry: &AssetRegistry,
+) -> Option<Arc<dyn Exchange>> {
+    let mut pools = Vec::new();
+    for pool in &curve.pools {
+        let Ok(address) = pool.address.parse::<Address>() else {
+            tracing::warn!(chain = chain.as_str(), address = %pool.address, "invalid curve pool address");
+            continue;
+        };
+        let Ok(variant) = pool.variant.parse::<CurveVariant>() else {
+            tracing::warn!(chain = chain.as_str(), variant = %pool.variant, "unknown curve variant");
+            continue;
+        };
+        let Some((coins, decimals)) = resolve_coins(&pool.coins, registry) else {
+            tracing::warn!(chain = chain.as_str(), address = %pool.address, "curve pool coins missing from registry");
+            continue;
+        };
+        pools.push(CurvePoolConfig {
+            address,
+            variant,
+            coins,
+            decimals,
+        });
+    }
+    match pools.is_empty() {
+        true => None,
+        false => Some(Arc::new(CurveExchange::new("curve", chain.clone(), pools))),
+    }
+}
+
+/// Resolve each coin id to an `AssetId` and its decimals, or `None` if any coin
+/// is unknown to the registry.
+fn resolve_coins(ids: &[String], registry: &AssetRegistry) -> Option<(Vec<AssetId>, Vec<u8>)> {
+    let mut coins = Vec::new();
+    let mut decimals = Vec::new();
+    for id in ids {
+        let coin = AssetId::new(id).ok()?;
+        decimals.push(registry.get(&coin)?.decimals);
+        coins.push(coin);
+    }
+    Some((coins, decimals))
 }
 
 /// Parse a list of namespaced asset ids.
@@ -280,5 +340,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(health["status"], "ok");
+    }
+
+    const SAMPLE_MULTI: &str = r#"
+        api_bind = "127.0.0.1:0"
+        fiat_provider_url = "http://127.0.0.1:1"
+
+        [[assets]]
+        id = "ethereum:0x0000000000000000000000000000000000000001"
+        decimals = 6
+        symbol = "USDC"
+        price_id = "usd-coin"
+
+        [[chains]]
+        chain_id = "ethereum"
+        rpc_url = "http://127.0.0.1:1"
+        sync_interval_ms = 60000
+        scan_interval_ms = 60000
+        max_hops = 4
+        input_usd = "1000"
+        start_assets = ["ethereum:0x0000000000000000000000000000000000000001"]
+        tracked_tokens = ["ethereum:0x0000000000000000000000000000000000000001"]
+
+        [[chains]]
+        chain_id = "arbitrum"
+        rpc_url = "http://127.0.0.1:1"
+        sync_interval_ms = 60000
+        scan_interval_ms = 60000
+        max_hops = 4
+        input_usd = "1000"
+        start_assets = ["arbitrum:0x0000000000000000000000000000000000000001"]
+        tracked_tokens = ["arbitrum:0x0000000000000000000000000000000000000001"]
+    "#;
+
+    /// Two chains wire two independent sync+scan stacks.
+    #[tokio::test]
+    async fn build_wires_multiple_chains() {
+        let settings = Settings::from_toml(SAMPLE_MULTI).unwrap();
+        let state = build(settings).unwrap();
+        assert_eq!(state.chains.len(), 2);
     }
 }

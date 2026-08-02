@@ -31,6 +31,12 @@ decimals = 18
 symbol = "DAI"
 price_id = "dai"
 
+[[assets]]
+id = "ethereum:0xdac17f958d2ee523a2206206994597c13d831ec7"
+decimals = 6
+symbol = "USDT"
+price_id = "tether"
+
 [[chains]]
 chain_id = "ethereum"
 rpc_url = "https://YOUR_RPC_ENDPOINT"
@@ -51,3 +57,32 @@ tracked_tokens = [
 [chains.uniswap_v3]
 factory = "0x1f98431c8ad98523631ae4a59f267346ea31f984"
 fee_tiers = [500, 3000, 10000]
+
+[chains.uniswap_v2]
+factory = "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f"
+fee_bps = 30
+
+# Curve discovery is config-driven: list each pool's address, variant, and coins.
+[chains.curve]
+pools = [
+    { address = "0xbebc44782c7db0a1a60cb6fe97d0b483032ff1c7", variant = "StableSwapV1", coins = [
+        "ethereum:0x6b175474e89094c44da98b954eedeac495271d0f", # DAI
+        "ethereum:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", # USDC
+        "ethereum:0xdac17f958d2ee523a2206206994597c13d831ec7", # USDT
+    ] },
+]
+
+# Add more chains by repeating the [[chains]] block (each gets its own sync +
+# scan loop). For example:
+# [[chains]]
+# chain_id = "arbitrum"
+# rpc_url = "https://YOUR_ARBITRUM_RPC"
+# sync_interval_ms = 1000
+# scan_interval_ms = 2000
+# max_hops = 16
+# input_usd = "1000"
+# start_assets = [ "arbitrum:0x..." ]
+# tracked_tokens = [ "arbitrum:0x..." ]
+# [chains.uniswap_v3]
+# factory = "0x1f98431c8ad98523631ae4a59f267346ea31f984"
+# fee_tiers = [500, 3000, 10000]

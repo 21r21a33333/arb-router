@@ -70,6 +70,24 @@ pub struct ChainSettings {
     /// Uniswap V2 (or V2-fork) deployment on this chain, if present.
     #[serde(default)]
     pub uniswap_v2: Option<UniswapV2Settings>,
+    /// Curve StableSwap pools to track on this chain (config-driven discovery).
+    #[serde(default)]
+    pub curve: Option<CurveSettings>,
+}
+
+/// The Curve pools to track on a chain.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CurveSettings {
+    pub pools: Vec<CurvePoolSettings>,
+}
+
+/// One configured Curve pool: address, variant name, and its coins (asset ids).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CurvePoolSettings {
+    pub address: String,
+    /// Curve variant, e.g. `"StableSwapV1"`.
+    pub variant: String,
+    pub coins: Vec<String>,
 }
 
 /// A Uniswap V3 deployment: its factory and the fee tiers to scan.

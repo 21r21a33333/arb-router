@@ -4,6 +4,7 @@
 //! Shared plumbing for N-asset pools (index resolution + the `get_dy` quote wrapper)
 //! lives here.
 
+pub mod exchange;
 pub mod pool;
 
 use alloy_primitives::U256;

@@ -33,6 +33,7 @@ reqwest = { version = "0.13.4", default-features = false, features = ["json", "r
 axum = "0.8.9"
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots", "connect"] }
 futures-util = "0.3.33"
+curve-adapter = { git = "https://github.com/sunce86/curve-math", version = "0.1.0-alpha.2" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util", "macros"] }
