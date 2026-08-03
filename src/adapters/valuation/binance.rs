@@ -26,12 +26,18 @@ pub struct BinanceFeed {
     store: Arc<PriceStore>,
     /// WebSocket base, e.g. `"wss://stream.binance.com:9443"`.
     ws_base: String,
-    /// Binance symbol (uppercase, e.g. `"ETHUSDT"`) → asset.
-    symbols: HashMap<String, AssetId>,
+    /// Binance symbol (uppercase, e.g. `"ETHUSDT"`) → every asset it prices. One
+    /// symbol can map to the same token on several chains (WETH on Ethereum,
+    /// Base, Arbitrum all take `ETHUSDT`).
+    symbols: HashMap<String, Vec<AssetId>>,
 }
 
 impl BinanceFeed {
-    pub fn new(store: Arc<PriceStore>, ws_base: String, symbols: HashMap<String, AssetId>) -> Self {
+    pub fn new(
+        store: Arc<PriceStore>,
+        ws_base: String,
+        symbols: HashMap<String, Vec<AssetId>>,
+    ) -> Self {
         Self {
             store,
             ws_base,
@@ -81,10 +87,13 @@ impl BinanceFeed {
     /// Parse one `bookTicker` message and write its mid price, if the symbol is tracked.
     fn ingest(&self, text: &str) {
         if let Ok(envelope) = serde_json::from_str::<Envelope>(text)
-            && let Some(asset) = self.symbols.get(&envelope.data.symbol)
+            && let Some(assets) = self.symbols.get(&envelope.data.symbol)
             && let Some(mid) = mid_price(&envelope.data)
         {
-            self.store.set_binance(asset.clone(), Usd(mid));
+            // One symbol's mid price fans out to every asset it covers.
+            for asset in assets {
+                self.store.set_binance(asset.clone(), Usd(mid));
+            }
         }
     }
 }
@@ -125,7 +134,7 @@ mod tests {
         BinanceFeed::new(
             store,
             "wss://unused".to_string(),
-            HashMap::from([("ETHUSDT".to_string(), asset("ethereum:weth"))]),
+            HashMap::from([("ETHUSDT".to_string(), vec![asset("ethereum:weth")])]),
         )
     }
 
@@ -163,7 +172,7 @@ mod tests {
         let feed = BinanceFeed::new(
             store.clone(),
             "wss://stream.binance.com:9443".to_string(),
-            HashMap::from([("ETHUSDT".to_string(), asset("ethereum:weth"))]),
+            HashMap::from([("ETHUSDT".to_string(), vec![asset("ethereum:weth")])]),
         );
         tokio::spawn(feed.run());
         tokio::time::sleep(Duration::from_secs(5)).await;

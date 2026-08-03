@@ -17,6 +17,9 @@ pub struct CoinGeckoFeed {
     /// Asset → CoinGecko coin id (e.g. `ethereum:weth → "weth"`).
     price_ids: HashMap<AssetId, String>,
     interval: Duration,
+    /// Optional CoinGecko Demo API key (sent as `x-cg-demo-api-key`). Without it
+    /// the public API is aggressively rate-limited.
+    api_key: Option<String>,
 }
 
 impl CoinGeckoFeed {
@@ -25,6 +28,7 @@ impl CoinGeckoFeed {
         base_url: String,
         price_ids: HashMap<AssetId, String>,
         interval: Duration,
+        api_key: Option<String>,
     ) -> Self {
         Self {
             store,
@@ -32,6 +36,7 @@ impl CoinGeckoFeed {
             base_url,
             price_ids,
             interval,
+            api_key,
         }
     }
 
@@ -57,8 +62,11 @@ impl CoinGeckoFeed {
             ids.into_iter().collect::<Vec<_>>().join(",")
         );
 
-        let body: HashMap<String, HashMap<String, f64>> =
-            self.client.get(url).send().await?.json().await?;
+        let mut request = self.client.get(url);
+        if let Some(key) = &self.api_key {
+            request = request.header("x-cg-demo-api-key", key);
+        }
+        let body: HashMap<String, HashMap<String, f64>> = request.send().await?.json().await?;
 
         for (asset, coin_id) in &self.price_ids {
             if let Some(usd) = body.get(coin_id).and_then(|quote| quote.get("usd"))
@@ -106,6 +114,7 @@ mod tests {
             server.uri(),
             price_ids,
             Duration::from_secs(60),
+            None,
         );
 
         feed.refresh().await.unwrap();

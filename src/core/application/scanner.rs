@@ -45,14 +45,23 @@ impl<S: PoolStore, V: Valuation, N: Notifier> Scanner<S, V, N> {
         let graph = Graph::new(&snapshot);
         let now = OffsetDateTime::now_utc();
 
-        let mut opps = Vec::new();
-        for start in &self.cfg.start_assets {
-            for path in find_paths(&graph, start, self.cfg.max_hops) {
-                if let Some(opp) = self.evaluate(&snapshot, path, now).await {
-                    opps.push(opp);
-                }
-            }
-        }
+        // Enumerate every path from every start asset (bounded DFS, CPU-cheap),
+        // then quote + price them concurrently — each `evaluate` awaits valuation
+        // reads, so running them together overlaps that latency.
+        let paths: Vec<Path> = self
+            .cfg
+            .start_assets
+            .iter()
+            .flat_map(|start| find_paths(&graph, start, self.cfg.max_hops))
+            .collect();
+        let evaluations = paths
+            .into_iter()
+            .map(|path| self.evaluate(&snapshot, path, now));
+        let opps: Vec<Opportunity> = futures_util::future::join_all(evaluations)
+            .await
+            .into_iter()
+            .flatten()
+            .collect();
 
         let ranked = rank_and_dedup(opps);
         let count = ranked.len();

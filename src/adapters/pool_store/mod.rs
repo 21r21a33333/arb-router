@@ -14,6 +14,7 @@ use time::OffsetDateTime;
 
 use crate::core::deps::chain_reader::{ChainReadError, ChainReader};
 use crate::core::deps::exchange::{Exchange, ExchangeError};
+use crate::core::deps::pool::Pool;
 use crate::core::deps::pool_store::{PoolEntry, PoolMeta, PoolSnapshot, PoolStore};
 use crate::primitives::asset::{AssetId, ChainId};
 use crate::primitives::chain::BlockId;
@@ -81,25 +82,32 @@ impl SyncWorker {
         let at = self.reader.latest_block(&self.chain).await?;
         let now = OffsetDateTime::now_utc();
 
+        // Refresh every supporting exchange concurrently — each is RPC-bound, so
+        // running them in parallel collapses the tick to the slowest exchange
+        // rather than their sum. A single exchange failing is logged and skipped,
+        // not fatal to the whole snapshot.
+        let refreshes = self
+            .exchanges
+            .iter()
+            .filter(|exchange| exchange.supports(&self.chain))
+            .map(|exchange| self.refresh_exchange(exchange.as_ref(), at));
+        let results = futures_util::future::join_all(refreshes).await;
+
         let mut entries = Vec::new();
-        for exchange in &self.exchanges {
-            if !exchange.supports(&self.chain) {
-                continue;
-            }
-            let keys = exchange
-                .discover(&self.chain, &self.tracked_tokens, self.reader.as_ref())
-                .await?;
-            let pools = exchange
-                .refresh(&keys, BlockId::Number(at), self.reader.as_ref())
-                .await?;
-            for pool in pools {
-                entries.push(PoolEntry {
+        for result in results {
+            match result {
+                Ok(pools) => entries.extend(pools.into_iter().map(|pool| PoolEntry {
                     pool: Arc::from(pool),
                     meta: PoolMeta {
                         synced_block: at,
                         synced_at: now,
                     },
-                });
+                })),
+                Err(err) => tracing::warn!(
+                    chain = self.chain.as_str(),
+                    error = %err,
+                    "exchange refresh failed; skipping"
+                ),
             }
         }
 
@@ -108,6 +116,20 @@ impl SyncWorker {
             Arc::new(PoolSnapshot::from_entries(at, now, entries)),
         );
         Ok(at)
+    }
+
+    /// Discover then refresh one exchange's pools at block `at`.
+    async fn refresh_exchange(
+        &self,
+        exchange: &dyn Exchange,
+        at: u64,
+    ) -> Result<Vec<Box<dyn Pool>>, ExchangeError> {
+        let keys = exchange
+            .discover(&self.chain, &self.tracked_tokens, self.reader.as_ref())
+            .await?;
+        exchange
+            .refresh(&keys, BlockId::Number(at), self.reader.as_ref())
+            .await
     }
 
     /// Sync repeatedly, sleeping `interval` between ticks. A failed tick is

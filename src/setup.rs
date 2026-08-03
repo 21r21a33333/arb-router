@@ -30,7 +30,9 @@ use crate::core::deps::chain_reader::ChainReader;
 use crate::core::deps::exchange::Exchange;
 use crate::core::deps::notifier::Notifier;
 use crate::core::deps::pool_store::PoolStore;
+use crate::core::deps::valuation::Valuation;
 use crate::primitives::asset::{AssetId, ChainId, Usd};
+use crate::primitives::opportunity::Opportunity;
 use crate::settings::{ChainSettings, CurveSettings, Settings, UniswapV4Settings};
 use curve_adapter::CurveVariant;
 
@@ -45,46 +47,89 @@ pub async fn run(settings: Settings) -> eyre::Result<()> {
     api::serve(&bind, state).await
 }
 
-/// Build the shared services and spawn per-chain sync/scan tasks, returning the
-/// API state. A chain whose provider cannot be built is logged and skipped.
-pub fn build(settings: Settings) -> eyre::Result<ApiState> {
-    let registry = settings.asset_registry()?;
+/// A chain's constructed (not-yet-running) scanner.
+type AppScanner = Scanner<ArcSwapPoolStore, CachedValuation, CompositeNotifier>;
 
-    // Shared reader over every chain that initialized.
-    let (providers, overrides, chains) = build_providers(&settings);
+/// The shared services every chain's worker + scanner draw on.
+struct Services {
+    reader: Arc<dyn ChainReader>,
+    store: Arc<ArcSwapPoolStore>,
+    valuation: Arc<CachedValuation>,
+    memory: Arc<MemoryNotifier>,
+    notifier: Arc<CompositeNotifier>,
+    /// Chains whose provider initialized (unbuildable chains are dropped).
+    chains: Vec<ChainId>,
+    registry: AssetRegistry,
+}
+
+/// Build the shared reader, store, valuation (price feeds spawned here), and
+/// notifiers. A chain whose provider cannot be built is logged and skipped.
+fn build_services(settings: &Settings) -> eyre::Result<Services> {
+    let registry = settings.asset_registry()?;
+    let (providers, overrides, chains) = build_providers(settings);
     let reader: Arc<dyn ChainReader> =
         Arc::new(MulticallChainReader::new(providers, CHUNK_SIZE).with_overrides(overrides));
-
     let store = Arc::new(ArcSwapPoolStore::new(&chains));
-    let valuation = build_valuation(&settings)?;
-
-    // Log every opportunity and keep the latest set for the API.
+    let valuation = build_valuation(settings)?;
+    // Log every opportunity and keep the latest set for the API / one-shot report.
     let memory = Arc::new(MemoryNotifier::new());
     let notifier = Arc::new(CompositeNotifier(vec![
         Arc::new(LogNotifier) as Arc<dyn Notifier>,
         memory.clone(),
     ]));
+    Ok(Services {
+        reader,
+        store,
+        valuation,
+        memory,
+        notifier,
+        chains,
+        registry,
+    })
+}
 
-    for chain_settings in &settings.chains {
-        let chain = ChainId::new(&chain_settings.chain_id);
-        if !chains.contains(&chain) {
+/// Construct one chain's sync worker + scanner (without spawning any loop).
+fn build_chain(c: &ChainSettings, s: &Services) -> eyre::Result<(SyncWorker, Arc<AppScanner>)> {
+    let chain = ChainId::new(&c.chain_id);
+    let worker = SyncWorker {
+        chain: chain.clone(),
+        store: s.store.clone(),
+        exchanges: build_exchanges(&chain, c, &s.registry),
+        reader: s.reader.clone(),
+        tracked_tokens: parse_assets(&c.tracked_tokens)?,
+        interval: Duration::from_millis(c.sync_interval_ms),
+    };
+    let scanner = Arc::new(Scanner {
+        chain,
+        pool_store: s.store.clone(),
+        valuation: s.valuation.clone(),
+        notifier: s.notifier.clone(),
+        registry: s.registry.clone(),
+        cfg: EngineConfig {
+            start_assets: parse_assets(&c.start_assets)?,
+            max_hops: c.max_hops,
+            input_usd: Usd(c.input_usd),
+        },
+    });
+    Ok((worker, scanner))
+}
+
+/// Build shared services and spawn a sync + scan loop per chain, returning the
+/// API state (used by the long-running `run`).
+pub fn build(settings: Settings) -> eyre::Result<ApiState> {
+    let services = build_services(&settings)?;
+    for c in &settings.chains {
+        if !services.chains.contains(&ChainId::new(&c.chain_id)) {
             continue; // provider failed to build
         }
-        spawn_chain(
-            chain,
-            chain_settings,
-            &store,
-            &reader,
-            &valuation,
-            &notifier,
-            &registry,
-        )?;
+        let (worker, scanner) = build_chain(c, &services)?;
+        tokio::spawn(worker.run());
+        tokio::spawn(scanner.run(Duration::from_millis(c.scan_interval_ms)));
     }
-
     Ok(ApiState {
-        memory,
-        store: store as Arc<dyn PoolStore>,
-        chains,
+        memory: services.memory,
+        store: services.store as Arc<dyn PoolStore>,
+        chains: services.chains,
     })
 }
 
@@ -139,15 +184,20 @@ fn build_valuation(settings: &Settings) -> eyre::Result<Arc<CachedValuation>> {
             settings.fiat_provider_url.clone(),
             price_ids,
             refresh,
+            settings.coingecko_api_key.clone(),
         )
         .run(),
     );
 
-    // Binance covers the assets that name a symbol.
-    let mut symbols = HashMap::new();
+    // Binance covers the assets that name a symbol — one symbol fans out to
+    // every asset that shares it (e.g. WETH on Ethereum, Base, and Arbitrum).
+    let mut symbols: HashMap<String, Vec<AssetId>> = HashMap::new();
     for asset in &settings.assets {
         if let Some(symbol) = &asset.binance_symbol {
-            symbols.insert(symbol.to_uppercase(), AssetId::new(&asset.id)?);
+            symbols
+                .entry(symbol.to_uppercase())
+                .or_default()
+                .push(AssetId::new(&asset.id)?);
         }
     }
     let ws_base = settings
@@ -159,40 +209,129 @@ fn build_valuation(settings: &Settings) -> eyre::Result<Arc<CachedValuation>> {
     Ok(Arc::new(CachedValuation::new(store)))
 }
 
-/// Spawn one chain's sync worker and scanner on background tasks.
-fn spawn_chain(
-    chain: ChainId,
-    c: &ChainSettings,
-    store: &Arc<ArcSwapPoolStore>,
-    reader: &Arc<dyn ChainReader>,
-    valuation: &Arc<CachedValuation>,
-    notifier: &Arc<CompositeNotifier>,
-    registry: &AssetRegistry,
-) -> eyre::Result<()> {
-    let worker = SyncWorker {
-        chain: chain.clone(),
-        store: store.clone(),
-        exchanges: build_exchanges(&chain, c, registry),
-        reader: reader.clone(),
-        tracked_tokens: parse_assets(&c.tracked_tokens)?,
-        interval: Duration::from_millis(c.sync_interval_ms),
-    };
-    tokio::spawn(worker.run());
+/// Sync + scan **every chain once**, concurrently, then print every detected
+/// arbitrage opportunity and return. A one-shot scan — no long-running loops and
+/// no API server.
+pub async fn run_once(settings: Settings) -> eyre::Result<()> {
+    let services = build_services(&settings)?;
+    let chains: Vec<(SyncWorker, Arc<AppScanner>)> = settings
+        .chains
+        .iter()
+        .filter(|c| services.chains.contains(&ChainId::new(&c.chain_id)))
+        .map(|c| build_chain(c, &services))
+        .collect::<eyre::Result<_>>()?;
 
-    let scanner = Arc::new(Scanner {
-        chain,
-        pool_store: store.clone(),
-        valuation: valuation.clone(),
-        notifier: notifier.clone(),
-        registry: registry.clone(),
-        cfg: EngineConfig {
-            start_assets: parse_assets(&c.start_assets)?,
-            max_hops: c.max_hops,
-            input_usd: Usd(c.input_usd),
-        },
+    // Scans need USD prices to size and value paths, so wait for the feeds
+    // (Binance primary), then show which oracle supplied each price.
+    warm_prices(&services, &settings).await;
+    report_prices(&services, &settings);
+
+    // Every chain: sync once, then scan once — all chains running concurrently.
+    let ticks = chains.iter().map(|(worker, scanner)| async move {
+        let chain = worker.chain.as_str().to_string();
+        match worker.refresh_once().await {
+            Ok(block) => tracing::info!(chain = %chain, block, "synced"),
+            Err(err) => {
+                tracing::warn!(chain = %chain, error = %err, "sync failed");
+                return;
+            }
+        }
+        match scanner.scan_once().await {
+            Ok(count) => tracing::info!(chain = %chain, opportunities = count, "scanned"),
+            Err(err) => tracing::warn!(chain = %chain, error = %err, "scan failed"),
+        }
     });
-    tokio::spawn(scanner.run(Duration::from_millis(c.scan_interval_ms)));
+    futures_util::future::join_all(ticks).await;
+
+    report_opportunities(&services.memory.all());
     Ok(())
+}
+
+/// Wait for the price feeds to warm: every start asset priceable, and — since
+/// Binance is the primary oracle — every start asset that names a Binance symbol
+/// actually sourced from Binance (not the CoinGecko fallback), up to a deadline.
+async fn warm_prices(services: &Services, settings: &Settings) {
+    let needed: std::collections::HashSet<AssetId> = settings
+        .chains
+        .iter()
+        .flat_map(|c| c.start_assets.iter())
+        .filter_map(|a| AssetId::new(a).ok())
+        .collect();
+    // Start assets that should be priced live by Binance.
+    let want_binance: std::collections::HashSet<AssetId> = settings
+        .assets
+        .iter()
+        .filter(|a| a.binance_symbol.is_some())
+        .filter_map(|a| AssetId::new(&a.id).ok())
+        .filter(|id| needed.contains(id))
+        .collect();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(25);
+    loop {
+        let mut priced = true;
+        for asset in &needed {
+            if services.valuation.price(asset).await.is_err() {
+                priced = false;
+            }
+        }
+        let binance_ready = want_binance
+            .iter()
+            .all(|a| matches!(services.valuation.price_and_source(a), Some((_, "binance"))));
+
+        if priced && binance_ready {
+            tracing::info!("price feeds warm (binance live)");
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            tracing::warn!(binance_ready, "warm timed out; scanning with available prices");
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+
+/// Print the oracle price + which feed supplied it for every configured asset.
+fn report_prices(services: &Services, settings: &Settings) {
+    println!("\n──────── oracle prices ────────");
+    for asset in &settings.assets {
+        let Ok(id) = AssetId::new(&asset.id) else {
+            continue;
+        };
+        let chain = asset.id.split(':').next().unwrap_or("?");
+        match services.valuation.price_and_source(&id) {
+            Some((usd, source)) => {
+                println!("  {:>8} ${:<15} [{source:<9}] {chain}", asset.symbol, usd.0)
+            }
+            None => println!("  {:>8} (unpriced)             {chain}", asset.symbol),
+        }
+    }
+}
+
+/// Print every detected opportunity as a compact report.
+fn report_opportunities(opps: &[Opportunity]) {
+    let plural = if opps.len() == 1 { "y" } else { "ies" };
+    println!(
+        "\n════════ arbitrage scan complete: {} opportunit{plural} ════════",
+        opps.len()
+    );
+    for o in opps {
+        let route = match o.path.is_cycle() {
+            true => format!("{} ↺ cycle", o.path.start.as_str()),
+            false => format!("{} → {}", o.path.start.as_str(), o.path.destination().as_str()),
+        };
+        let profit = o
+            .profit_usd
+            .map(|p| format!("${}", p.0))
+            .unwrap_or_else(|| "?".into());
+        println!(
+            "  [{}] {route}  in {} out {}  profit {profit}  {} bps",
+            o.chain.as_str(),
+            o.input.0,
+            o.output.0,
+            o.roi_bps
+        );
+    }
+    println!();
 }
 
 /// The exchanges configured on a chain.

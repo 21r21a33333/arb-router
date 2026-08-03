@@ -58,6 +58,21 @@ impl PriceStore {
             .or_else(|| self.fresh(&self.coingecko, asset, now))
     }
 
+    /// The freshest price plus which feed supplied it (`"binance"` preferred over
+    /// `"coingecko"`) — for diagnostics / the one-shot oracle report.
+    pub fn price_and_source(
+        &self,
+        asset: &AssetId,
+        now: OffsetDateTime,
+    ) -> Option<(Usd, &'static str)> {
+        match self.fresh(&self.binance, asset, now) {
+            Some(usd) => Some((usd, "binance")),
+            None => self
+                .fresh(&self.coingecko, asset, now)
+                .map(|usd| (usd, "coingecko")),
+        }
+    }
+
     fn fresh(
         &self,
         source: &RwLock<HashMap<AssetId, PricePoint>>,
@@ -90,6 +105,12 @@ pub struct CachedValuation {
 impl CachedValuation {
     pub fn new(store: Arc<PriceStore>) -> Self {
         Self { store }
+    }
+
+    /// The current price + the feed that supplied it (`binance`/`coingecko`).
+    pub fn price_and_source(&self, asset: &AssetId) -> Option<(Usd, &'static str)> {
+        self.store
+            .price_and_source(asset, OffsetDateTime::now_utc())
     }
 }
 

@@ -74,7 +74,7 @@ const BASE_USDBC: &str = "0xd9aaEC86B65D86f6A7B5B1b0c42FFA531710b6CA";
 
 const AERO_FACTORY: Address = address!("0x420DD381b31aEf6683db6B902084cB0FFECe40Da");
 
-// ─── shared harness ────────────────────────────────────────────────────────────
+// ─── shared harness ────────────────────────────────────────────────────────────.
 
 fn aid(chain: &str, addr: &str) -> AssetId {
     AssetId::new(&format!("{chain}:{addr}")).unwrap()

@@ -16,6 +16,10 @@ pub struct Settings {
     pub api_bind: String,
     /// Base URL of the fiat price provider (CoinGecko-compatible).
     pub fiat_provider_url: String,
+    /// CoinGecko Demo API key (`x-cg-demo-api-key`); the public API is heavily
+    /// rate-limited without one.
+    #[serde(default)]
+    pub coingecko_api_key: Option<String>,
     /// Binance combined-stream WebSocket base (defaults to the public mainnet).
     #[serde(default)]
     pub binance_ws_url: Option<String>,

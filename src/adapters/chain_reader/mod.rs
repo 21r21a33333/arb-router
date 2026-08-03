@@ -137,9 +137,17 @@ impl ChainReader for MulticallChainReader {
             BlockId::Latest => self.latest_block(chain).await?,
         };
 
+        // Fire every chunk concurrently at the pinned block — a large discover is
+        // many chunks, and the RPC (eRPC) hedges/load-balances them, so parallel
+        // round trips collapse the batch to ~one round-trip of latency.
+        // `join_all` preserves order, so concatenating keeps results aligned with
+        // the input calls.
+        let chunks = calls
+            .chunks(self.chunk_size)
+            .map(|chunk| self.aggregate(chain, block, chunk));
         let mut results = Vec::with_capacity(calls.len());
-        for chunk in calls.chunks(self.chunk_size) {
-            results.extend(self.aggregate(chain, block, chunk).await?);
+        for chunk_result in futures_util::future::join_all(chunks).await {
+            results.extend(chunk_result?);
         }
         Ok(BatchOutput { block, results })
     }
