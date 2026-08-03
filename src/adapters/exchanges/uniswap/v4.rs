@@ -31,8 +31,12 @@ pub struct UniswapV4Pool {
     pub token0: AssetId,
     /// Token1 asset id.
     pub token1: AssetId,
-    /// Fee in hundredths of a basis point (e.g. 3000 = 0.30%).
-    pub fee: u32,
+    /// Effective swap fee (LP fee compounded with the V4 protocol fee) for
+    /// token0→token1, in pips (hundredths of a bip).
+    pub fee_zero_for_one: u32,
+    /// Effective swap fee for token1→token0, in pips. V4 protocol fees are
+    /// per-direction, so the two can differ.
+    pub fee_one_for_zero: u32,
     /// Tick spacing for this fee tier (e.g. 60 for the 0.30% tier).
     pub tick_spacing: i32,
     /// Current active liquidity in the tick range containing the price.
@@ -66,7 +70,8 @@ impl UniswapV4Pool {
         tick: i32,
         ticks: HashMap<i32, TickInfo>,
         tick_bitmap: HashMap<i16, U256>,
-        fee: u32,
+        fee_zero_for_one: u32,
+        fee_one_for_zero: u32,
         tick_spacing: i32,
         decimals0: u8,
         decimals1: u8,
@@ -82,7 +87,8 @@ impl UniswapV4Pool {
             tick,
             ticks,
             tick_bitmap,
-            fee,
+            fee_zero_for_one,
+            fee_one_for_zero,
             tick_spacing,
             decimals0,
             decimals1,
@@ -98,13 +104,17 @@ impl UniswapV4Pool {
     ///
     /// `zero_for_one`: `true` means token0 → token1, `false` means token1 → token0.
     fn simulate_swap(&self, zero_for_one: bool, amount_in: U256) -> Option<U256> {
+        let fee = match zero_for_one {
+            true => self.fee_zero_for_one,
+            false => self.fee_one_for_zero,
+        };
         simulate_v3_swap(
             self.sqrt_price_x96,
             self.tick,
             self.liquidity,
             &self.ticks,
             &self.tick_bitmap,
-            self.fee,
+            fee,
             self.tick_spacing,
             zero_for_one,
             amount_in,
@@ -197,7 +207,8 @@ mod tests {
             0,
             ticks,
             tick_bitmap,
-            3000,
+            3000, // fee_zero_for_one (no protocol fee in this vector)
+            3000, // fee_one_for_zero
             tick_spacing,
             6,
             18,

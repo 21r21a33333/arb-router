@@ -9,6 +9,7 @@ pub mod v2_exchange;
 pub mod v3;
 pub mod v3_exchange;
 pub mod v4;
+pub mod v4_exchange;
 
 use alloy_primitives::U256;
 

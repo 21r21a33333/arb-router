@@ -10,9 +10,13 @@ use alloy::primitives::Address;
 
 use crate::adapters::api::{self, ApiState};
 use crate::adapters::chain_reader::MulticallChainReader;
+use crate::adapters::exchanges::aerodrome::slipstream_exchange::SlipstreamExchange;
+use crate::adapters::exchanges::aerodrome::v2_exchange::AerodromeV2Exchange;
+use crate::adapters::exchanges::asset_address;
 use crate::adapters::exchanges::curve::exchange::{CurveExchange, CurvePoolConfig};
 use crate::adapters::exchanges::uniswap::v2_exchange::UniswapV2Exchange;
 use crate::adapters::exchanges::uniswap::v3_exchange::UniswapV3Exchange;
+use crate::adapters::exchanges::uniswap::v4_exchange::{UniswapV4Exchange, V4PoolConfig};
 use crate::adapters::notifier::{CompositeNotifier, LogNotifier, MemoryNotifier};
 use crate::adapters::pool_store::{ArcSwapPoolStore, SyncWorker};
 use crate::adapters::rpc::provider::make_provider;
@@ -27,7 +31,7 @@ use crate::core::deps::exchange::Exchange;
 use crate::core::deps::notifier::Notifier;
 use crate::core::deps::pool_store::PoolStore;
 use crate::primitives::asset::{AssetId, ChainId, Usd};
-use crate::settings::{ChainSettings, CurveSettings, Settings};
+use crate::settings::{ChainSettings, CurveSettings, Settings, UniswapV4Settings};
 use curve_adapter::CurveVariant;
 
 /// Calls per Multicall3 round trip.
@@ -227,13 +231,145 @@ fn build_exchanges(
         }
     }
 
+    if let Some(v4) = &c.uniswap_v4
+        && let Some(exchange) = build_uniswap_v4(chain, v4, registry)
+    {
+        exchanges.push(exchange);
+    }
+
     if let Some(curve) = &c.curve
         && let Some(exchange) = build_curve(chain, curve, registry)
     {
         exchanges.push(exchange);
     }
 
+    if let Some(aero) = &c.aerodrome_v2 {
+        match aero.factory.parse::<Address>() {
+            Ok(factory) => exchanges.push(Arc::new(AerodromeV2Exchange::new(
+                "aerodrome_v2",
+                chain.clone(),
+                factory,
+                token_decimals(registry),
+            ))),
+            Err(_) => {
+                tracing::warn!(chain = chain.as_str(), factory = %aero.factory, "invalid aerodrome_v2 factory address")
+            }
+        }
+    }
+
+    if let Some(slip) = &c.aerodrome_slipstream {
+        match slip.factory.parse::<Address>() {
+            Ok(factory) => exchanges.push(Arc::new(SlipstreamExchange::new(
+                "aerodrome_slipstream",
+                chain.clone(),
+                factory,
+                slip.tick_spacings.clone(),
+            ))),
+            Err(_) => {
+                tracing::warn!(chain = chain.as_str(), factory = %slip.factory, "invalid aerodrome_slipstream factory address")
+            }
+        }
+    }
+
     exchanges
+}
+
+/// Every asset's decimal count, keyed by id — the Aerodrome stable curve needs
+/// token decimals, which aren't otherwise available at refresh time.
+fn token_decimals(registry: &AssetRegistry) -> HashMap<AssetId, u8> {
+    registry
+        .iter()
+        .map(|(id, meta)| (id.clone(), meta.decimals))
+        .collect()
+}
+
+/// Build the Uniswap V4 exchange from configured pools, resolving each pool's
+/// currencies + decimals against the registry and sorting them so `currency0 <
+/// currency1` before the pool id is derived. Pools that don't resolve are
+/// skipped; an invalid `PoolManager` address skips the whole exchange.
+fn build_uniswap_v4(
+    chain: &ChainId,
+    v4: &UniswapV4Settings,
+    registry: &AssetRegistry,
+) -> Option<Arc<dyn Exchange>> {
+    let pool_manager = match v4.pool_manager.parse::<Address>() {
+        Ok(addr) => addr,
+        Err(_) => {
+            tracing::warn!(chain = chain.as_str(), pool_manager = %v4.pool_manager, "invalid uniswap_v4 pool_manager address");
+            return None;
+        }
+    };
+
+    let mut pools = Vec::new();
+    for pool in &v4.pools {
+        let Some(config) = resolve_v4_pool(chain, pool, registry) else {
+            continue;
+        };
+        pools.push(config);
+    }
+    match pools.is_empty() {
+        true => None,
+        false => Some(Arc::new(UniswapV4Exchange::new(
+            "uniswap_v4",
+            chain.clone(),
+            pool_manager,
+            pools,
+        ))),
+    }
+}
+
+/// Resolve one configured V4 pool into a [`V4PoolConfig`], or `None` (with a
+/// warning) if a coin, address, or hooks value doesn't resolve.
+fn resolve_v4_pool(
+    chain: &ChainId,
+    pool: &crate::settings::V4PoolSettings,
+    registry: &AssetRegistry,
+) -> Option<V4PoolConfig> {
+    let (Ok(a0), Ok(a1)) = (AssetId::new(&pool.coin0), AssetId::new(&pool.coin1)) else {
+        tracing::warn!(chain = chain.as_str(), "invalid uniswap_v4 coin id");
+        return None;
+    };
+    let (Some(m0), Some(m1)) = (registry.get(&a0), registry.get(&a1)) else {
+        tracing::warn!(
+            chain = chain.as_str(),
+            "uniswap_v4 pool coins missing from registry"
+        );
+        return None;
+    };
+    let (Ok(addr0), Ok(addr1)) = (asset_address(&a0), asset_address(&a1)) else {
+        tracing::warn!(
+            chain = chain.as_str(),
+            "uniswap_v4 coin is not a chain:0x… address"
+        );
+        return None;
+    };
+    let hooks = match &pool.hooks {
+        Some(h) => match h.parse::<Address>() {
+            Ok(addr) => addr,
+            Err(_) => {
+                tracing::warn!(chain = chain.as_str(), hooks = %h, "invalid uniswap_v4 hooks address");
+                return None;
+            }
+        },
+        None => Address::ZERO,
+    };
+
+    // V4 orders currencies by address; keep decimals + asset ids paired with them.
+    let ((c0, t0, d0), (c1, t1, d1)) = match addr0 < addr1 {
+        true => ((addr0, a0, m0.decimals), (addr1, a1, m1.decimals)),
+        false => ((addr1, a1, m1.decimals), (addr0, a0, m0.decimals)),
+    };
+    Some(V4PoolConfig::new(
+        c0,
+        c1,
+        t0,
+        t1,
+        pool.fee,
+        pool.tick_spacing,
+        hooks,
+        d0,
+        d1,
+    ))
 }
 
 /// Build the Curve exchange from configured pools, resolving each pool's coins
@@ -257,11 +393,24 @@ fn build_curve(
             tracing::warn!(chain = chain.as_str(), address = %pool.address, "curve pool coins missing from registry");
             continue;
         };
+        // Meta pools need a valid base-pool address; a malformed one is dropped.
+        let base_pool = match &pool.base_pool {
+            Some(addr) => match addr.parse::<Address>() {
+                Ok(parsed) => Some(parsed),
+                Err(_) => {
+                    tracing::warn!(chain = chain.as_str(), base_pool = %addr, "invalid curve base_pool address");
+                    continue;
+                }
+            },
+            None => None,
+        };
         pools.push(CurvePoolConfig {
             address,
             variant,
             coins,
             decimals,
+            base_pool,
+            eth_variant: pool.eth_variant,
         });
     }
     match pools.is_empty() {
@@ -379,5 +528,47 @@ mod tests {
         let settings = Settings::from_toml(SAMPLE_MULTI).unwrap();
         let state = build(settings).unwrap();
         assert_eq!(state.chains.len(), 2);
+    }
+
+    /// V4 pool resolution sorts currencies by address and keeps each token's
+    /// decimals paired with it, regardless of the config order.
+    #[test]
+    fn resolve_v4_pool_sorts_currencies_and_pairs_decimals() {
+        use crate::primitives::asset::AssetMeta;
+        use crate::settings::V4PoolSettings;
+
+        let low = "ethereum:0x0000000000000000000000000000000000000001";
+        let high = "ethereum:0x0000000000000000000000000000000000000002";
+        let mut registry = AssetRegistry::new();
+        registry.insert(
+            AssetId::new(low).unwrap(),
+            AssetMeta {
+                decimals: 6,
+                symbol: "LOW".into(),
+            },
+        );
+        registry.insert(
+            AssetId::new(high).unwrap(),
+            AssetMeta {
+                decimals: 18,
+                symbol: "HIGH".into(),
+            },
+        );
+
+        // Config lists them high-then-low; resolution must still sort low first.
+        let pool = V4PoolSettings {
+            coin0: high.to_string(),
+            coin1: low.to_string(),
+            fee: 500,
+            tick_spacing: 10,
+            hooks: None,
+        };
+        let chain = ChainId::new("ethereum");
+        let config = resolve_v4_pool(&chain, &pool, &registry).unwrap();
+
+        assert_eq!(config.token0, AssetId::new(low).unwrap());
+        assert_eq!(config.decimals0, 6);
+        assert_eq!(config.token1, AssetId::new(high).unwrap());
+        assert_eq!(config.decimals1, 18);
     }
 }

@@ -164,12 +164,14 @@ mod tests {
         assert_eq!(reader.multicall(&custom_chain), custom_addr);
     }
 
-    /// Live sanity check against a real RPC. Run with:
-    /// `ETH_RPC_URL=... cargo test --lib -- --ignored chain_reader`
+    /// Live sanity check against a real RPC (defaults to a public endpoint;
+    /// override with `ETH_RPC_URL`). Run with:
+    /// `cargo test --lib -- --ignored reads_a_live_block`
     #[tokio::test]
-    #[ignore = "needs ETH_RPC_URL"]
+    #[ignore = "live: reads a real block"]
     async fn reads_a_live_block() {
-        let url = std::env::var("ETH_RPC_URL").expect("ETH_RPC_URL");
+        let url = std::env::var("ETH_RPC_URL")
+            .unwrap_or_else(|_| crate::test_utils::ETH_RPC_DEFAULT.to_string());
         let chain = ChainId::new("ethereum");
         let reader = MulticallChainReader::new(
             HashMap::from([(chain.clone(), make_provider(&url).unwrap())]),

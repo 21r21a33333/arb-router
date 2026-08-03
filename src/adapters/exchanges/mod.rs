@@ -6,8 +6,12 @@
 //! adapter. Family-specific plumbing lives in that family's module: [`uniswap`]
 //! (2-asset AMMs: V2/V3/V4) and [`curve`] (N-asset stableswap / crypto).
 
+pub mod aerodrome;
 pub mod curve;
 pub mod uniswap;
+
+#[cfg(test)]
+mod live;
 
 use alloy_primitives::{Address, U256};
 use rust_decimal::Decimal;

@@ -37,6 +37,33 @@ decimals = 6
 symbol = "USDT"
 price_id = "tether"
 
+[[assets]]
+id = "ethereum:0x2260fac5e5542a773aa44fbcfedf7c193bc2c599"
+decimals = 8
+symbol = "WBTC"
+price_id = "wrapped-bitcoin"
+binance_symbol = "BTCUSDT"
+
+# Base assets (for the Aerodrome example chain below).
+[[assets]]
+id = "base:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+decimals = 6
+symbol = "USDC"
+price_id = "usd-coin"
+
+[[assets]]
+id = "base:0x4200000000000000000000000000000000000006"
+decimals = 18
+symbol = "WETH"
+price_id = "weth"
+binance_symbol = "ETHUSDT"
+
+[[assets]]
+id = "base:0x50c5725949a6f0c72e6c4a641f24049a917db0cb"
+decimals = 18
+symbol = "DAI"
+price_id = "dai"
+
 [[chains]]
 chain_id = "ethereum"
 rpc_url = "https://YOUR_RPC_ENDPOINT"
@@ -62,27 +89,64 @@ fee_tiers = [500, 3000, 10000]
 factory = "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f"
 fee_bps = 30
 
+# Uniswap V4 has no factory to enumerate — pools live in a singleton PoolManager
+# and are read by storage slot. List each pool's currencies (asset ids, any
+# order), fee, and tick spacing; omit `hooks` for a hookless pool.
+[chains.uniswap_v4]
+pool_manager = "0x000000000004444c5dc75cb358380d2e3de08a90"
+pools = [
+    # WETH / USDC, 0.05% (fee = 500, tick_spacing = 10)
+    { coin0 = "ethereum:0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", coin1 = "ethereum:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", fee = 500, tick_spacing = 10 },
+]
+
 # Curve discovery is config-driven: list each pool's address, variant, and coins.
+# Every curve-math variant is supported (StableSwap V0/V1/V2/STETH/NG/ALend/Meta,
+# TwoCrypto V1/NG/Stable, TriCrypto V1/NG). Meta pools also need `base_pool`;
+# TwoCryptoV1 also needs `eth_variant`.
 [chains.curve]
 pools = [
+    # 3pool — plain StableSwap.
     { address = "0xbebc44782c7db0a1a60cb6fe97d0b483032ff1c7", variant = "StableSwapV1", coins = [
         "ethereum:0x6b175474e89094c44da98b954eedeac495271d0f", # DAI
         "ethereum:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", # USDC
         "ethereum:0xdac17f958d2ee523a2206206994597c13d831ec7", # USDT
     ] },
+    # TriCrypto-NG (USDC/WBTC/WETH) — CryptoSwap: reads D, gamma, price_scale, fees.
+    { address = "0x7f86bf177dd4f3494b841a37e810a34dd56c829b", variant = "TriCryptoNG", coins = [
+        "ethereum:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", # USDC
+        "ethereum:0x2260fac5e5542a773aa44fbcfedf7c193bc2c599", # WBTC
+        "ethereum:0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", # WETH
+    ] },
+    # Meta pool example (paired with a base pool's LP token) — needs `base_pool`:
+    # { address = "0x…", variant = "StableSwapMeta", base_pool = "0xbebc44782c7db0a1a60cb6fe97d0b483032ff1c7", coins = ["ethereum:0x…meta", "ethereum:0x6c3f90f043a72fa612cbac8115ee7e52bde6e490"] },
 ]
 
-# Add more chains by repeating the [[chains]] block (each gets its own sync +
-# scan loop). For example:
-# [[chains]]
-# chain_id = "arbitrum"
-# rpc_url = "https://YOUR_ARBITRUM_RPC"
-# sync_interval_ms = 1000
-# scan_interval_ms = 2000
-# max_hops = 16
-# input_usd = "1000"
-# start_assets = [ "arbitrum:0x..." ]
-# tracked_tokens = [ "arbitrum:0x..." ]
-# [chains.uniswap_v3]
-# factory = "0x1f98431c8ad98523631ae4a59f267346ea31f984"
-# fee_tiers = [500, 3000, 10000]
+# A second chain — Base — with Aerodrome. Each chain runs its own sync + scan
+# loop. Aerodrome discovery is on-chain (a factory getPool), so it needs only
+# the factory addresses.
+[[chains]]
+chain_id = "base"
+rpc_url = "https://YOUR_BASE_RPC"
+sync_interval_ms = 2000
+scan_interval_ms = 2000
+max_hops = 16
+input_usd = "1000"
+start_assets = [
+    "base:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    "base:0x4200000000000000000000000000000000000006",
+]
+tracked_tokens = [
+    "base:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    "base:0x4200000000000000000000000000000000000006",
+    "base:0x50c5725949a6f0c72e6c4a641f24049a917db0cb",
+]
+
+# Aerodrome v2: volatile (constant-product) + stable (Solidly x³y+y³x) pools.
+[chains.aerodrome_v2]
+factory = "0x420dd381b31aef6683db6b902084cb0ffece40da"
+
+# Aerodrome Slipstream: concentrated liquidity (a Uniswap V3 fork), keyed by
+# tick spacing rather than fee tier.
+[chains.aerodrome_slipstream]
+factory = "0x5e7bb104d84c7cb9b682aac2f3d509f5f406809a"
+tick_spacings = [1, 50, 100, 200, 2000]

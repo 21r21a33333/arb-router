@@ -70,9 +70,58 @@ pub struct ChainSettings {
     /// Uniswap V2 (or V2-fork) deployment on this chain, if present.
     #[serde(default)]
     pub uniswap_v2: Option<UniswapV2Settings>,
+    /// Uniswap V4 pools to track on this chain (config-driven, like Curve).
+    #[serde(default)]
+    pub uniswap_v4: Option<UniswapV4Settings>,
     /// Curve StableSwap pools to track on this chain (config-driven discovery).
     #[serde(default)]
     pub curve: Option<CurveSettings>,
+    /// Aerodrome v2 (volatile + stable) deployment on this chain, if present.
+    #[serde(default)]
+    pub aerodrome_v2: Option<AerodromeV2Settings>,
+    /// Aerodrome Slipstream (concentrated-liquidity) deployment, if present.
+    #[serde(default)]
+    pub aerodrome_slipstream: Option<AerodromeSlipstreamSettings>,
+}
+
+/// An Aerodrome v2 deployment: just its `PoolFactory` (fees and the stable flag
+/// are read per pool on-chain).
+#[derive(Debug, Clone, Deserialize)]
+pub struct AerodromeV2Settings {
+    pub factory: String,
+}
+
+/// An Aerodrome Slipstream deployment: its `CLFactory` and the tick spacings to
+/// scan (Slipstream's discovery dimension, e.g. 1, 50, 100, 200, 2000).
+#[derive(Debug, Clone, Deserialize)]
+pub struct AerodromeSlipstreamSettings {
+    pub factory: String,
+    pub tick_spacings: Vec<i32>,
+}
+
+/// A Uniswap V4 deployment: the singleton `PoolManager` and the pools to track.
+///
+/// V4 has no factory to enumerate, so each pool is listed explicitly (its
+/// `pool_id` is derived from these fields).
+#[derive(Debug, Clone, Deserialize)]
+pub struct UniswapV4Settings {
+    /// The singleton `PoolManager` address on this chain.
+    pub pool_manager: String,
+    pub pools: Vec<V4PoolSettings>,
+}
+
+/// One configured Uniswap V4 pool. `coin0`/`coin1` are asset ids (order does
+/// not matter — currencies are sorted by address before the id is derived).
+#[derive(Debug, Clone, Deserialize)]
+pub struct V4PoolSettings {
+    pub coin0: String,
+    pub coin1: String,
+    /// Fee in hundredths of a bip (e.g. 500 = 0.05%).
+    pub fee: u32,
+    pub tick_spacing: i32,
+    /// Hooks contract; omit for a hookless pool (the zero address).
+    #[serde(default)]
+    pub hooks: Option<String>,
 }
 
 /// The Curve pools to track on a chain.
@@ -85,9 +134,16 @@ pub struct CurveSettings {
 #[derive(Debug, Clone, Deserialize)]
 pub struct CurvePoolSettings {
     pub address: String,
-    /// Curve variant, e.g. `"StableSwapV1"`.
+    /// Curve variant, e.g. `"StableSwapV1"`, `"TriCryptoNG"`.
     pub variant: String,
     pub coins: Vec<String>,
+    /// Meta pools only: the base pool address (its `get_virtual_price` is the LP
+    /// coin's rate). Required for `StableSwapMeta`.
+    #[serde(default)]
+    pub base_pool: Option<String>,
+    /// `TwoCryptoV1` only: whether it's the WETH (ETH-variant) solver.
+    #[serde(default)]
+    pub eth_variant: Option<bool>,
 }
 
 /// A Uniswap V3 deployment: its factory and the fee tiers to scan.
@@ -173,6 +229,26 @@ mod tests {
         factory = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
         fee_tiers = [500, 3000]
     "#;
+
+    /// The shipped `Settings.example.toml` must always deserialize — this guards
+    /// against config drift as new exchange blocks are added.
+    #[test]
+    fn example_config_parses() {
+        let settings = Settings::load("Settings.example").expect("example must parse");
+        let base = settings
+            .chains
+            .iter()
+            .find(|c| c.chain_id == "base")
+            .expect("example has a base chain");
+        assert!(base.aerodrome_v2.is_some());
+        assert!(base.aerodrome_slipstream.is_some());
+        let ethereum = settings
+            .chains
+            .iter()
+            .find(|c| c.chain_id == "ethereum")
+            .expect("example has an ethereum chain");
+        assert!(ethereum.uniswap_v4.is_some());
+    }
 
     #[test]
     fn parses_sample_and_builds_registry() {
