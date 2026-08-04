@@ -109,9 +109,7 @@ pub(crate) fn u256_to_amount(value: U256) -> Option<Amount> {
 /// mapping just has to be deterministic and injective enough to resolve
 /// direction within a pool.
 pub(crate) fn core_asset(asset: &AssetId) -> Option<CoreAssetId> {
-    let mut parts = asset.as_str().splitn(2, ':');
-    let chain = parts.next()?;
-    let token = parts.next()?;
+    let (chain, token) = asset.as_str().split_once(':')?;
     let slot = match token.parse::<Address>() {
         Ok(addr) => addr.into_word(),
         Err(_) => keccak256(token.as_bytes()),

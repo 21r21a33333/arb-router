@@ -4,11 +4,11 @@
 //! amm-core quoter and translates arb-router's `Pair`/`Amount` at the boundary.
 //! The swap math lives once, in `amm-core`.
 
+use alloy_primitives::U256;
 use amm_core::primitives::asset::AssetAmount as CoreAmount;
 use amm_core::primitives::pool::PoolId as CorePoolId;
 use amm_core::protocols::uniswap::v2::UniswapV2Pool as CorePool;
 use amm_core::traits::pool::Pool as CorePoolTrait;
-use alloy_primitives::U256;
 
 use crate::adapters::exchanges::{amount_to_u256, core_asset, u256_to_amount};
 use crate::core::deps::pool::Pool;
