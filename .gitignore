@@ -1,5 +1,6 @@
 /target
 /.superpowers
 
-# local config with RPC endpoints
+# local config with RPC endpoints + secrets (never committed)
 /Settings.toml
+/settings/
