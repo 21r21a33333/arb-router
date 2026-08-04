@@ -13,7 +13,8 @@ pub mod uniswap;
 #[cfg(test)]
 mod live;
 
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, U256, keccak256};
+use amm_core::primitives::asset::{AssetId as CoreAssetId, ChainId as CoreChainId};
 use rust_decimal::Decimal;
 
 use crate::core::deps::chain_reader::ChainReadError;
@@ -95,6 +96,49 @@ pub(crate) fn u256_to_amount(value: U256) -> Option<Amount> {
     let s = value.to_string();
     let d: Decimal = s.parse().ok()?;
     Some(Amount(d))
+}
+
+// ─── amm-core bridge ────────────────────────────────────────────────────────
+
+/// Map an arb-router `AssetId` (`"chain:token"`) to an `amm_core::AssetId`.
+///
+/// The chain name maps to a numeric `ChainId`; the token maps to a 32-byte slot
+/// (an address is used directly, any other token id is hashed to a stable slot).
+/// Only equality matters for quoting — `amm-core`'s swap math is driven by
+/// reserves/liquidity and direction, never by the concrete token value — so the
+/// mapping just has to be deterministic and injective enough to resolve
+/// direction within a pool.
+pub(crate) fn core_asset(asset: &AssetId) -> Option<CoreAssetId> {
+    let mut parts = asset.as_str().splitn(2, ':');
+    let chain = parts.next()?;
+    let token = parts.next()?;
+    let slot = match token.parse::<Address>() {
+        Ok(addr) => addr.into_word(),
+        Err(_) => keccak256(token.as_bytes()),
+    };
+    Some(CoreAssetId::new(CoreChainId(chain_id(chain)), slot))
+}
+
+/// A numeric chain id for a chain name. Known chains get their canonical id;
+/// anything else gets a stable FNV-1a hash (distinct and deterministic).
+fn chain_id(name: &str) -> u64 {
+    match name {
+        "ethereum" => 1,
+        "optimism" => 10,
+        "bsc" | "bnb" => 56,
+        "polygon" => 137,
+        "base" => 8453,
+        "arbitrum" => 42161,
+        "avalanche" => 43114,
+        other => {
+            let mut h = 0xcbf29ce484222325u64;
+            for b in other.bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+            h
+        }
+    }
 }
 
 // ─── tests ────────────────────────────────────────────────────────────────────
