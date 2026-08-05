@@ -124,12 +124,8 @@ impl SyncWorker {
         exchange: &dyn Exchange,
         at: u64,
     ) -> Result<Vec<Box<dyn Pool>>, ExchangeError> {
-        let keys = exchange
-            .discover(&self.chain, &self.tracked_tokens, self.reader.as_ref())
-            .await?;
-        exchange
-            .refresh(&keys, BlockId::Number(at), self.reader.as_ref())
-            .await
+        let keys = exchange.discover(&self.chain, &self.tracked_tokens).await?;
+        exchange.refresh(&keys, BlockId::Number(at)).await
     }
 
     /// Sync repeatedly, sleeping `interval` between ticks. A failed tick is
@@ -158,7 +154,6 @@ mod tests {
     use crate::core::deps::exchange::Exchange;
     use crate::core::deps::pool::Pool;
     use crate::primitives::asset::{Amount, Pair};
-    use crate::primitives::chain::{BatchOutput, Call};
     use crate::primitives::pool::{ExchangeId, PoolId, PoolKey};
     use async_trait::async_trait;
 
@@ -201,7 +196,6 @@ mod tests {
             &self,
             _chain: &ChainId,
             _tokens: &[AssetId],
-            _reader: &dyn ChainReader,
         ) -> Result<Vec<PoolKey>, ExchangeError> {
             Ok(vec![PoolKey {
                 exchange: self.id.clone(),
@@ -215,7 +209,6 @@ mod tests {
             &self,
             keys: &[PoolKey],
             _at: BlockId,
-            _reader: &dyn ChainReader,
         ) -> Result<Vec<Box<dyn Pool>>, ExchangeError> {
             Ok(keys
                 .iter()
@@ -237,17 +230,6 @@ mod tests {
     impl ChainReader for FakeReader {
         async fn latest_block(&self, _chain: &ChainId) -> Result<u64, ChainReadError> {
             Ok(self.block)
-        }
-        async fn call_batch(
-            &self,
-            _chain: &ChainId,
-            _at: BlockId,
-            _calls: Vec<Call>,
-        ) -> Result<BatchOutput, ChainReadError> {
-            Ok(BatchOutput {
-                block: self.block,
-                results: Vec::new(),
-            })
         }
     }
 

@@ -670,6 +670,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "amm-core"
+version = "0.1.0"
+source = "git+https://github.com/21r21a33333/amm-rs#51e70be2a104fbbe674ec790c6d66ed701de4b1a"
+dependencies = [
+ "alloy-primitives",
+ "curve-math",
+ "num-bigint",
+ "num-rational",
+ "num-traits",
+ "thiserror",
+ "uniswap_v3_math",
+]
+
+[[package]]
+name = "amm-rpc"
+version = "0.1.0"
+source = "git+https://github.com/21r21a33333/amm-rs#51e70be2a104fbbe674ec790c6d66ed701de4b1a"
+dependencies = [
+ "alloy",
+ "amm-core",
+ "async-trait",
+ "curve-adapter",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -684,6 +711,8 @@ version = "0.1.0"
 dependencies = [
  "alloy",
  "alloy-primitives",
+ "amm-core",
+ "amm-rpc",
  "arc-swap",
  "async-trait",
  "axum",
@@ -2938,6 +2967,17 @@ version = "0.1.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7969661fd2958a5cb096e56c8e1ad0444ac2bbcd0061bd28660485a44879858f"
 dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "num-rational"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f83d14da390562dca69fc84082e73e548e1ad308d24accdedd2720017cb37824"
+dependencies = [
+ "num-bigint",
+ "num-integer",
  "num-traits",
 ]
 

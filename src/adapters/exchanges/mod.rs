@@ -1,39 +1,19 @@
-//! DEX exchange adapters, grouped by protocol family.
+//! The exchange layer.
 //!
-//! Helpers **universal to every exchange family** live here: the base-unit
-//! `Amount` ↔ `U256` conversion used by quoters, plus the discover/refresh
-//! plumbing (`call`, `read_err`, address parsing) shared by every `Exchange`
-//! adapter. Family-specific plumbing lives in that family's module: [`uniswap`]
-//! (2-asset AMMs: V2/V3/V4) and [`curve`] (N-asset stableswap / crypto).
+//! arb-router no longer implements its own on-chain fetch/decode or swap math;
+//! it imports `amm-rs`. [`amm_rpc`] adapts `amm-rpc`'s `StateSource` sources into
+//! arb-router's `Exchange` port. The helpers here are the shared boundary: the
+//! base-unit `Amount` ↔ `U256` conversion and the arb-router ↔ `amm_core`
+//! `AssetId` bridge.
 
-pub mod aerodrome;
-pub mod curve;
-pub mod uniswap;
+pub mod amm_rpc;
 
-#[cfg(test)]
-mod live;
-
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, U256, keccak256};
+use amm_core::primitives::asset::{AssetId as CoreAssetId, ChainId as CoreChainId};
 use rust_decimal::Decimal;
 
-use crate::core::deps::chain_reader::ChainReadError;
 use crate::core::deps::exchange::ExchangeError;
 use crate::primitives::asset::{Amount, AssetId};
-use crate::primitives::chain::{Bytes, Call};
-use crate::primitives::pool::PoolKey;
-
-/// A `Call` to `target` carrying `calldata`.
-pub(crate) fn call(target: Address, calldata: Vec<u8>) -> Call {
-    Call {
-        target: target.to_string(),
-        calldata: Bytes(calldata),
-    }
-}
-
-/// Wrap a chain-read failure as an exchange read error.
-pub(crate) fn read_err(err: ChainReadError) -> ExchangeError {
-    ExchangeError::Read(err.to_string())
-}
 
 /// Parse the address out of an `AssetId` (`"chain:0x…"`).
 pub(crate) fn asset_address(asset: &AssetId) -> Result<Address, ExchangeError> {
@@ -45,13 +25,6 @@ pub(crate) fn asset_address(asset: &AssetId) -> Result<Address, ExchangeError> {
         .ok_or_else(|| {
             ExchangeError::Decode(format!("asset id `{}` is not `chain:0x…`", asset.as_str()))
         })
-}
-
-/// The pool address stored on a `PoolKey`, parsed.
-pub(crate) fn pool_address(key: &PoolKey) -> Result<Address, ExchangeError> {
-    key.address
-        .parse::<Address>()
-        .map_err(|_| ExchangeError::Decode(format!("pool address `{}`", key.address)))
 }
 
 /// Convert an `Amount` (base-unit integral Decimal) to `U256`.
@@ -95,6 +68,47 @@ pub(crate) fn u256_to_amount(value: U256) -> Option<Amount> {
     let s = value.to_string();
     let d: Decimal = s.parse().ok()?;
     Some(Amount(d))
+}
+
+// ─── amm-core bridge ────────────────────────────────────────────────────────
+
+/// Map an arb-router `AssetId` (`"chain:token"`) to an `amm_core::AssetId`.
+///
+/// The chain name maps to a numeric `ChainId`; the token maps to a 32-byte slot
+/// (an address is used directly, any other token id is hashed to a stable slot).
+/// Only equality matters for quoting — `amm-core`'s swap math is driven by
+/// reserves/liquidity and direction, never by the concrete token value — so the
+/// mapping just has to be deterministic and injective enough to resolve
+/// direction within a pool.
+pub(crate) fn core_asset(asset: &AssetId) -> Option<CoreAssetId> {
+    let (chain, token) = asset.as_str().split_once(':')?;
+    let slot = match token.parse::<Address>() {
+        Ok(addr) => addr.into_word(),
+        Err(_) => keccak256(token.as_bytes()),
+    };
+    Some(CoreAssetId::new(CoreChainId(chain_id(chain)), slot))
+}
+
+/// A numeric chain id for a chain name. Known chains get their canonical id;
+/// anything else gets a stable FNV-1a hash (distinct and deterministic).
+fn chain_id(name: &str) -> u64 {
+    match name {
+        "ethereum" => 1,
+        "optimism" => 10,
+        "bsc" | "bnb" | "bnbchain" => 56,
+        "polygon" => 137,
+        "base" => 8453,
+        "arbitrum" => 42161,
+        "avalanche" => 43114,
+        other => {
+            let mut h = 0xcbf29ce484222325u64;
+            for b in other.bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+            h
+        }
+    }
 }
 
 // ─── tests ────────────────────────────────────────────────────────────────────
