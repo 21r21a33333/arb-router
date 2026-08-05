@@ -172,9 +172,14 @@ impl<S: StateSource + Send + Sync> Exchange for AmmRpcExchange<S> {
 }
 
 /// An amm-core asset id → an arb-router `"chain:0xaddress"` id.
+///
+/// The address is **lower-cased**: alloy's `Address` Display is EIP-55
+/// checksummed (mixed case), but arb-router compares asset ids byte-for-byte and
+/// its config / registry / valuation keys are all lowercase. Emitting checksummed
+/// ids here would make every real token fail those exact-string lookups.
 fn arb_asset(chain: &str, asset: &amm_core::primitives::asset::AssetId) -> Option<AssetId> {
     let addr = Address::from_word(asset.token);
-    AssetId::new(&format!("{chain}:{addr}")).ok()
+    AssetId::new(&format!("{chain}:{addr:#x}")).ok()
 }
 
 /// An arb-router chain name → an amm-core numeric `ChainId`.
@@ -193,4 +198,30 @@ fn alloy_block(at: BlockId) -> AlloyBlockId {
 /// Map an amm-rpc error into an exchange read error.
 fn rpc_err(err: RpcError) -> ExchangeError {
     ExchangeError::Read(err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use amm_core::primitives::asset::{AssetId as CoreAssetId, ChainId as CoreChainId};
+
+    /// A refreshed pool must report asset ids that byte-match the lowercase ids
+    /// used in config / registry / start-assets — alloy's `Address` Display is
+    /// EIP-55 checksummed, so the bridge must lower-case it or the scanner's
+    /// exact-string graph/pricing lookups miss every real token.
+    #[test]
+    fn arb_asset_lowercases_to_match_config_ids() {
+        // USDC — an address with hex letters that checksum to mixed case.
+        let usdc = alloy::primitives::address!("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let core = CoreAssetId::new(CoreChainId(1), usdc.into_word());
+        let arb = arb_asset("ethereum", &core).expect("valid id");
+
+        let config_id = "ethereum:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48";
+        assert_eq!(arb.as_str(), config_id, "id must be lowercase");
+        assert_eq!(
+            arb,
+            AssetId::new(config_id).unwrap(),
+            "must byte-match the config id"
+        );
+    }
 }

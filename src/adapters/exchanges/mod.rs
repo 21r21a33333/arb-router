@@ -95,7 +95,7 @@ fn chain_id(name: &str) -> u64 {
     match name {
         "ethereum" => 1,
         "optimism" => 10,
-        "bsc" | "bnb" => 56,
+        "bsc" | "bnb" | "bnbchain" => 56,
         "polygon" => 137,
         "base" => 8453,
         "arbitrum" => 42161,
