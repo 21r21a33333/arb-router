@@ -3,7 +3,6 @@
 use async_trait::async_trait;
 
 use crate::primitives::asset::ChainId;
-use crate::primitives::chain::{BatchOutput, BlockId, Call};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ChainReadError {
@@ -14,16 +13,11 @@ pub enum ChainReadError {
     Internal(String),
 }
 
+/// Reads a chain's latest block height — the one on-chain read the sync loop
+/// needs itself (pool state is fetched by the exchange sources, which own their
+/// providers).
 #[async_trait]
 pub trait ChainReader: Send + Sync {
     /// Current head block number for `chain`.
     async fn latest_block(&self, chain: &ChainId) -> Result<u64, ChainReadError>;
-
-    /// Execute `calls` against `chain` at block `at`, preserving order.
-    async fn call_batch(
-        &self,
-        chain: &ChainId,
-        at: BlockId,
-        calls: Vec<Call>,
-    ) -> Result<BatchOutput, ChainReadError>;
 }

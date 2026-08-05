@@ -9,7 +9,7 @@ use std::time::Duration;
 use alloy::primitives::Address;
 
 use crate::adapters::api::{self, ApiState};
-use crate::adapters::chain_reader::MulticallChainReader;
+use crate::adapters::chain_reader::BlockReader;
 use crate::adapters::exchanges::amm_rpc::AmmRpcExchange;
 use crate::adapters::exchanges::{asset_address, core_asset};
 use crate::adapters::notifier::{CompositeNotifier, LogNotifier, MemoryNotifier};
@@ -37,9 +37,6 @@ use amm_rpc::protocols::uniswap_v2::UniswapV2Source;
 use amm_rpc::protocols::uniswap_v3::UniswapV3Source;
 use amm_rpc::protocols::uniswap_v4::{UniswapV4Source, V4PoolConfig};
 use curve_adapter::CurveVariant;
-
-/// Calls per Multicall3 round trip.
-const CHUNK_SIZE: usize = 50;
 
 /// Wire everything from `settings`, spawn a sync + scan task per chain, and
 /// serve the read API until the process ends.
@@ -71,12 +68,11 @@ struct Services {
 /// notifiers. A chain whose provider cannot be built is logged and skipped.
 fn build_services(settings: &Settings) -> eyre::Result<Services> {
     let registry = settings.asset_registry()?;
-    let (providers, overrides, chains) = build_providers(settings);
+    let (providers, chains) = build_providers(settings);
     // Exchange sources read through their own provider clones; the reader keeps a
     // set for block-height reads. `EthProvider` is reference-counted, cheap to clone.
     let providers_for_exchanges = providers.clone();
-    let reader: Arc<dyn ChainReader> =
-        Arc::new(MulticallChainReader::new(providers, CHUNK_SIZE).with_overrides(overrides));
+    let reader: Arc<dyn ChainReader> = Arc::new(BlockReader::new(providers));
     let store = Arc::new(ArcSwapPoolStore::new(&chains));
     let valuation = build_valuation(settings)?;
     // Log every opportunity and keep the latest set for the API / one-shot report.
@@ -142,17 +138,9 @@ pub fn build(settings: Settings) -> eyre::Result<ApiState> {
     })
 }
 
-/// Build one HTTP provider per chain (skipping failures) plus any Multicall3
-/// address overrides.
-fn build_providers(
-    settings: &Settings,
-) -> (
-    HashMap<ChainId, crate::adapters::rpc::provider::EthProvider>,
-    HashMap<ChainId, Address>,
-    Vec<ChainId>,
-) {
+/// Build one HTTP provider per chain, skipping any whose init fails.
+fn build_providers(settings: &Settings) -> (HashMap<ChainId, EthProvider>, Vec<ChainId>) {
     let mut providers = HashMap::new();
-    let mut overrides = HashMap::new();
     let mut chains = Vec::new();
     for c in &settings.chains {
         let chain = ChainId::new(&c.chain_id);
@@ -165,14 +153,9 @@ fn build_providers(
                 continue;
             }
         }
-        if let Some(addr) = &c.multicall_address
-            && let Ok(address) = addr.parse::<Address>()
-        {
-            overrides.insert(chain.clone(), address);
-        }
         chains.push(chain);
     }
-    (providers, overrides, chains)
+    (providers, chains)
 }
 
 /// Build the price store, spawn the Binance + CoinGecko feeds, and return the

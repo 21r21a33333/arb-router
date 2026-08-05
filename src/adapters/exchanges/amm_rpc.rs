@@ -18,7 +18,6 @@ use amm_rpc::source::StateSource;
 use async_trait::async_trait;
 
 use super::{amount_to_u256, chain_id, core_asset, u256_to_amount};
-use crate::core::deps::chain_reader::ChainReader;
 use crate::core::deps::exchange::{Exchange, ExchangeError};
 use crate::core::deps::pool::Pool;
 use crate::primitives::asset::{Amount, AssetId, ChainId, Pair};
@@ -140,7 +139,6 @@ impl<S: StateSource + Send + Sync> Exchange for AmmRpcExchange<S> {
         &self,
         chain: &ChainId,
         tokens: &[AssetId],
-        _reader: &dyn ChainReader,
     ) -> Result<Vec<PoolKey>, ExchangeError> {
         let core_tokens: Vec<_> = tokens.iter().filter_map(core_asset).collect();
         let keys = self
@@ -155,7 +153,6 @@ impl<S: StateSource + Send + Sync> Exchange for AmmRpcExchange<S> {
         &self,
         keys: &[PoolKey],
         at: BlockId,
-        _reader: &dyn ChainReader,
     ) -> Result<Vec<Box<dyn Pool>>, ExchangeError> {
         let core_keys: Vec<_> = keys.iter().filter_map(|k| self.to_core_key(k)).collect();
         let pools = self

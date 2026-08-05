@@ -3,7 +3,6 @@
 
 use async_trait::async_trait;
 
-use crate::core::deps::chain_reader::ChainReader;
 use crate::core::deps::pool::Pool;
 use crate::primitives::asset::{AssetId, ChainId};
 use crate::primitives::chain::BlockId;
@@ -33,7 +32,6 @@ pub trait Exchange: Send + Sync {
         &self,
         chain: &ChainId,
         tokens: &[AssetId],
-        reader: &dyn ChainReader,
     ) -> Result<Vec<PoolKey>, ExchangeError>;
 
     /// Read current state for `keys` at block `at`, yielding quotable pools.
@@ -41,6 +39,5 @@ pub trait Exchange: Send + Sync {
         &self,
         keys: &[PoolKey],
         at: BlockId,
-        reader: &dyn ChainReader,
     ) -> Result<Vec<Box<dyn Pool>>, ExchangeError>;
 }

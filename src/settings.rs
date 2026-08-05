@@ -55,9 +55,6 @@ pub struct ChainSettings {
     /// Chain namespace, e.g. `"ethereum"`.
     pub chain_id: String,
     pub rpc_url: String,
-    /// Non-canonical Multicall3 address, if this chain needs one.
-    #[serde(default)]
-    pub multicall_address: Option<String>,
     pub sync_interval_ms: u64,
     pub scan_interval_ms: u64,
     /// Maximum path length in hops.

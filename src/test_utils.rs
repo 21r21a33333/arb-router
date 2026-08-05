@@ -16,30 +16,8 @@ use crate::primitives::asset::{Amount, AssetId, ChainId, Pair, Usd};
 use crate::primitives::opportunity::Opportunity;
 use crate::primitives::pool::PoolId;
 
-/// Build a live [`MulticallChainReader`](crate::adapters::chain_reader::MulticallChainReader)
-/// for `chain` from the `env_var` RPC url (falling back to `default_rpc`).
-///
-/// For `#[ignore]`d integration tests that read real mainnet state. Public
-/// endpoints are rate-limited — pass your own via the env var for reliability.
-pub fn live_reader(
-    chain: &str,
-    env_var: &str,
-    default_rpc: &str,
-) -> (crate::adapters::chain_reader::MulticallChainReader, ChainId) {
-    let url = std::env::var(env_var).unwrap_or_else(|_| default_rpc.to_string());
-    let provider = crate::adapters::rpc::provider::make_provider(&url).expect("valid rpc url");
-    let chain_id = ChainId::new(chain);
-    let mut providers = HashMap::new();
-    providers.insert(chain_id.clone(), provider);
-    (
-        crate::adapters::chain_reader::MulticallChainReader::new(providers, 50),
-        chain_id,
-    )
-}
-
-/// Default public RPCs for live tests (override with `ETH_RPC_URL` / `BASE_RPC_URL`).
+/// Default public RPC for the live block-height test (override with `ETH_RPC_URL`).
 pub const ETH_RPC_DEFAULT: &str = "https://ethereum-rpc.publicnode.com";
-pub const BASE_RPC_DEFAULT: &str = "https://base-rpc.publicnode.com";
 
 /// A pool that returns `amount_in * rate` for any supported pair, in either
 /// direction. Enough to drive graph, path, profit, and ranking logic.
