@@ -672,6 +672,7 @@ dependencies = [
 [[package]]
 name = "amm-core"
 version = "0.1.0"
+source = "git+https://github.com/21r21a33333/amm-rs#51e70be2a104fbbe674ec790c6d66ed701de4b1a"
 dependencies = [
  "alloy-primitives",
  "curve-math",
@@ -685,6 +686,7 @@ dependencies = [
 [[package]]
 name = "amm-rpc"
 version = "0.1.0"
+source = "git+https://github.com/21r21a33333/amm-rs#51e70be2a104fbbe674ec790c6d66ed701de4b1a"
 dependencies = [
  "alloy",
  "amm-core",
