@@ -31,6 +31,9 @@ alloy = { version = "2.2.0", features = ["contract", "provider-http"] }
 # Shared, wei-exact AMM quoting math. arb-router's pool adapters delegate their
 # swap math here rather than re-implementing it (single source of truth).
 amm-core = { path = "../amm-rs/amm-core", features = ["uniswap-v2", "uniswap-v3", "uniswap-v4", "aerodrome"] }
+# On-chain state fetching (discover + refresh) for every exchange family. arb-router
+# imports these StateSource sources instead of maintaining its own fetch/decode code.
+amm-rpc = { path = "../amm-rs/amm-rpc", features = ["curve"] }
 moka = { version = "0.12.15", features = ["future"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 axum = "0.8.9"

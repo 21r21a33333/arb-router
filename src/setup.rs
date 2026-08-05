@@ -10,16 +10,11 @@ use alloy::primitives::Address;
 
 use crate::adapters::api::{self, ApiState};
 use crate::adapters::chain_reader::MulticallChainReader;
-use crate::adapters::exchanges::aerodrome::slipstream_exchange::SlipstreamExchange;
-use crate::adapters::exchanges::aerodrome::v2_exchange::AerodromeV2Exchange;
-use crate::adapters::exchanges::asset_address;
-use crate::adapters::exchanges::curve::exchange::{CurveExchange, CurvePoolConfig};
-use crate::adapters::exchanges::uniswap::v2_exchange::UniswapV2Exchange;
-use crate::adapters::exchanges::uniswap::v3_exchange::UniswapV3Exchange;
-use crate::adapters::exchanges::uniswap::v4_exchange::{UniswapV4Exchange, V4PoolConfig};
+use crate::adapters::exchanges::amm_rpc::AmmRpcExchange;
+use crate::adapters::exchanges::{asset_address, core_asset};
 use crate::adapters::notifier::{CompositeNotifier, LogNotifier, MemoryNotifier};
 use crate::adapters::pool_store::{ArcSwapPoolStore, SyncWorker};
-use crate::adapters::rpc::provider::make_provider;
+use crate::adapters::rpc::provider::{EthProvider, make_provider};
 use crate::adapters::valuation::binance::BinanceFeed;
 use crate::adapters::valuation::coingecko::CoinGeckoFeed;
 use crate::adapters::valuation::{CachedValuation, PriceStore};
@@ -34,6 +29,13 @@ use crate::core::deps::valuation::Valuation;
 use crate::primitives::asset::{AssetId, ChainId, Usd};
 use crate::primitives::opportunity::Opportunity;
 use crate::settings::{ChainSettings, CurveSettings, Settings, UniswapV4Settings};
+use amm_core::protocols::uniswap::v4::Hooks;
+use amm_rpc::protocols::aerodrome::AerodromeSource;
+use amm_rpc::protocols::curve::{CurvePoolConfig, CurveSource};
+use amm_rpc::protocols::slipstream::SlipstreamSource;
+use amm_rpc::protocols::uniswap_v2::UniswapV2Source;
+use amm_rpc::protocols::uniswap_v3::UniswapV3Source;
+use amm_rpc::protocols::uniswap_v4::{UniswapV4Source, V4PoolConfig};
 use curve_adapter::CurveVariant;
 
 /// Calls per Multicall3 round trip.
@@ -53,6 +55,9 @@ type AppScanner = Scanner<ArcSwapPoolStore, CachedValuation, CompositeNotifier>;
 /// The shared services every chain's worker + scanner draw on.
 struct Services {
     reader: Arc<dyn ChainReader>,
+    /// Per-chain providers the exchange sources read through (the reader keeps
+    /// its own clones for block-height reads).
+    providers: HashMap<ChainId, EthProvider>,
     store: Arc<ArcSwapPoolStore>,
     valuation: Arc<CachedValuation>,
     memory: Arc<MemoryNotifier>,
@@ -67,6 +72,9 @@ struct Services {
 fn build_services(settings: &Settings) -> eyre::Result<Services> {
     let registry = settings.asset_registry()?;
     let (providers, overrides, chains) = build_providers(settings);
+    // Exchange sources read through their own provider clones; the reader keeps a
+    // set for block-height reads. `EthProvider` is reference-counted, cheap to clone.
+    let providers_for_exchanges = providers.clone();
     let reader: Arc<dyn ChainReader> =
         Arc::new(MulticallChainReader::new(providers, CHUNK_SIZE).with_overrides(overrides));
     let store = Arc::new(ArcSwapPoolStore::new(&chains));
@@ -79,6 +87,7 @@ fn build_services(settings: &Settings) -> eyre::Result<Services> {
     ]));
     Ok(Services {
         reader,
+        providers: providers_for_exchanges,
         store,
         valuation,
         memory,
@@ -94,7 +103,7 @@ fn build_chain(c: &ChainSettings, s: &Services) -> eyre::Result<(SyncWorker, Arc
     let worker = SyncWorker {
         chain: chain.clone(),
         store: s.store.clone(),
-        exchanges: build_exchanges(&chain, c, &s.registry),
+        exchanges: build_exchanges(&chain, c, &s.registry, s.providers.get(&chain).cloned()),
         reader: s.reader.clone(),
         tracked_tokens: parse_assets(&c.tracked_tokens)?,
         interval: Duration::from_millis(c.sync_interval_ms),
@@ -283,7 +292,10 @@ async fn warm_prices(services: &Services, settings: &Settings) {
             return;
         }
         if std::time::Instant::now() >= deadline {
-            tracing::warn!(binance_ready, "warm timed out; scanning with available prices");
+            tracing::warn!(
+                binance_ready,
+                "warm timed out; scanning with available prices"
+            );
             return;
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -317,7 +329,11 @@ fn report_opportunities(opps: &[Opportunity]) {
     for o in opps {
         let route = match o.path.is_cycle() {
             true => format!("{} ↺ cycle", o.path.start.as_str()),
-            false => format!("{} → {}", o.path.start.as_str(), o.path.destination().as_str()),
+            false => format!(
+                "{} → {}",
+                o.path.start.as_str(),
+                o.path.destination().as_str()
+            ),
         };
         let profit = o
             .profit_usd
@@ -334,21 +350,24 @@ fn report_opportunities(opps: &[Opportunity]) {
     println!();
 }
 
-/// The exchanges configured on a chain.
+/// The exchanges configured on a chain, each backed by an `amm-rpc` source.
 fn build_exchanges(
     chain: &ChainId,
     c: &ChainSettings,
     registry: &AssetRegistry,
+    provider: Option<EthProvider>,
 ) -> Vec<Arc<dyn Exchange>> {
+    let Some(provider) = provider else {
+        return Vec::new();
+    };
     let mut exchanges: Vec<Arc<dyn Exchange>> = Vec::new();
 
     if let Some(v3) = &c.uniswap_v3 {
         match v3.factory.parse::<Address>() {
-            Ok(factory) => exchanges.push(Arc::new(UniswapV3Exchange::new(
+            Ok(factory) => exchanges.push(Arc::new(AmmRpcExchange::new(
                 "uniswap_v3",
                 chain.clone(),
-                factory,
-                v3.fee_tiers.clone(),
+                UniswapV3Source::with_factory(provider.clone(), factory, v3.fee_tiers.clone()),
             ))),
             Err(_) => {
                 tracing::warn!(chain = chain.as_str(), factory = %v3.factory, "invalid uniswap_v3 factory address")
@@ -358,11 +377,10 @@ fn build_exchanges(
 
     if let Some(v2) = &c.uniswap_v2 {
         match v2.factory.parse::<Address>() {
-            Ok(factory) => exchanges.push(Arc::new(UniswapV2Exchange::new(
+            Ok(factory) => exchanges.push(Arc::new(AmmRpcExchange::new(
                 "uniswap_v2",
                 chain.clone(),
-                factory,
-                v2.fee_bps,
+                UniswapV2Source::with_factory(provider.clone(), factory, v2.fee_bps),
             ))),
             Err(_) => {
                 tracing::warn!(chain = chain.as_str(), factory = %v2.factory, "invalid uniswap_v2 factory address")
@@ -371,24 +389,23 @@ fn build_exchanges(
     }
 
     if let Some(v4) = &c.uniswap_v4
-        && let Some(exchange) = build_uniswap_v4(chain, v4, registry)
+        && let Some(exchange) = build_uniswap_v4(chain, v4, registry, provider.clone())
     {
         exchanges.push(exchange);
     }
 
     if let Some(curve) = &c.curve
-        && let Some(exchange) = build_curve(chain, curve, registry)
+        && let Some(exchange) = build_curve(chain, curve, registry, provider.clone())
     {
         exchanges.push(exchange);
     }
 
     if let Some(aero) = &c.aerodrome_v2 {
         match aero.factory.parse::<Address>() {
-            Ok(factory) => exchanges.push(Arc::new(AerodromeV2Exchange::new(
+            Ok(factory) => exchanges.push(Arc::new(AmmRpcExchange::new(
                 "aerodrome_v2",
                 chain.clone(),
-                factory,
-                token_decimals(registry),
+                AerodromeSource::new(provider.clone(), factory),
             ))),
             Err(_) => {
                 tracing::warn!(chain = chain.as_str(), factory = %aero.factory, "invalid aerodrome_v2 factory address")
@@ -398,11 +415,14 @@ fn build_exchanges(
 
     if let Some(slip) = &c.aerodrome_slipstream {
         match slip.factory.parse::<Address>() {
-            Ok(factory) => exchanges.push(Arc::new(SlipstreamExchange::new(
+            Ok(factory) => exchanges.push(Arc::new(AmmRpcExchange::new(
                 "aerodrome_slipstream",
                 chain.clone(),
-                factory,
-                slip.tick_spacings.clone(),
+                SlipstreamSource::with_factory(
+                    provider.clone(),
+                    factory,
+                    slip.tick_spacings.clone(),
+                ),
             ))),
             Err(_) => {
                 tracing::warn!(chain = chain.as_str(), factory = %slip.factory, "invalid aerodrome_slipstream factory address")
@@ -413,23 +433,15 @@ fn build_exchanges(
     exchanges
 }
 
-/// Every asset's decimal count, keyed by id — the Aerodrome stable curve needs
-/// token decimals, which aren't otherwise available at refresh time.
-fn token_decimals(registry: &AssetRegistry) -> HashMap<AssetId, u8> {
-    registry
-        .iter()
-        .map(|(id, meta)| (id.clone(), meta.decimals))
-        .collect()
-}
-
 /// Build the Uniswap V4 exchange from configured pools, resolving each pool's
-/// currencies + decimals against the registry and sorting them so `currency0 <
-/// currency1` before the pool id is derived. Pools that don't resolve are
-/// skipped; an invalid `PoolManager` address skips the whole exchange.
+/// currencies against the registry and sorting them so `currency0 < currency1`
+/// before the pool id is derived. Pools that don't resolve are skipped; an
+/// invalid `PoolManager` address skips the whole exchange.
 fn build_uniswap_v4(
     chain: &ChainId,
     v4: &UniswapV4Settings,
     registry: &AssetRegistry,
+    provider: EthProvider,
 ) -> Option<Arc<dyn Exchange>> {
     let pool_manager = match v4.pool_manager.parse::<Address>() {
         Ok(addr) => addr,
@@ -448,17 +460,18 @@ fn build_uniswap_v4(
     }
     match pools.is_empty() {
         true => None,
-        false => Some(Arc::new(UniswapV4Exchange::new(
+        false => Some(Arc::new(AmmRpcExchange::new(
             "uniswap_v4",
             chain.clone(),
-            pool_manager,
-            pools,
+            UniswapV4Source::new(provider, pool_manager, pools),
         ))),
     }
 }
 
-/// Resolve one configured V4 pool into a [`V4PoolConfig`], or `None` (with a
-/// warning) if a coin, address, or hooks value doesn't resolve.
+/// Resolve one configured V4 pool into an amm-rpc [`V4PoolConfig`], or `None`
+/// (with a warning) if a coin, address, or hooks value doesn't resolve. Hooks
+/// are treated as static (`Hooks::None`); the hook address still feeds the pool
+/// id derivation.
 fn resolve_v4_pool(
     chain: &ChainId,
     pool: &crate::settings::V4PoolSettings,
@@ -468,18 +481,21 @@ fn resolve_v4_pool(
         tracing::warn!(chain = chain.as_str(), "invalid uniswap_v4 coin id");
         return None;
     };
-    let (Some(m0), Some(m1)) = (registry.get(&a0), registry.get(&a1)) else {
+    if registry.get(&a0).is_none() || registry.get(&a1).is_none() {
         tracing::warn!(
             chain = chain.as_str(),
             "uniswap_v4 pool coins missing from registry"
         );
         return None;
-    };
+    }
     let (Ok(addr0), Ok(addr1)) = (asset_address(&a0), asset_address(&a1)) else {
         tracing::warn!(
             chain = chain.as_str(),
             "uniswap_v4 coin is not a chain:0x… address"
         );
+        return None;
+    };
+    let (Some(t0), Some(t1)) = (core_asset(&a0), core_asset(&a1)) else {
         return None;
     };
     let hooks = match &pool.hooks {
@@ -493,21 +509,20 @@ fn resolve_v4_pool(
         None => Address::ZERO,
     };
 
-    // V4 orders currencies by address; keep decimals + asset ids paired with them.
-    let ((c0, t0, d0), (c1, t1, d1)) = match addr0 < addr1 {
-        true => ((addr0, a0, m0.decimals), (addr1, a1, m1.decimals)),
-        false => ((addr1, a1, m1.decimals), (addr0, a0, m0.decimals)),
+    // V4 orders currencies by address; keep the asset ids paired with them.
+    let ((c0, ct0), (c1, ct1)) = match addr0 < addr1 {
+        true => ((addr0, t0), (addr1, t1)),
+        false => ((addr1, t1), (addr0, t0)),
     };
     Some(V4PoolConfig::new(
         c0,
         c1,
-        t0,
-        t1,
+        ct0,
+        ct1,
         pool.fee,
         pool.tick_spacing,
         hooks,
-        d0,
-        d1,
+        Hooks::None,
     ))
 }
 
@@ -517,6 +532,7 @@ fn build_curve(
     chain: &ChainId,
     curve: &CurveSettings,
     registry: &AssetRegistry,
+    provider: EthProvider,
 ) -> Option<Arc<dyn Exchange>> {
     let mut pools = Vec::new();
     for pool in &curve.pools {
@@ -554,19 +570,26 @@ fn build_curve(
     }
     match pools.is_empty() {
         true => None,
-        false => Some(Arc::new(CurveExchange::new("curve", chain.clone(), pools))),
+        false => Some(Arc::new(AmmRpcExchange::new(
+            "curve",
+            chain.clone(),
+            CurveSource::new(provider, pools),
+        ))),
     }
 }
 
-/// Resolve each coin id to an `AssetId` and its decimals, or `None` if any coin
-/// is unknown to the registry.
-fn resolve_coins(ids: &[String], registry: &AssetRegistry) -> Option<(Vec<AssetId>, Vec<u8>)> {
+/// Resolve each coin id to an amm-core `AssetId` and its decimals, or `None` if
+/// any coin is unknown to the registry.
+fn resolve_coins(
+    ids: &[String],
+    registry: &AssetRegistry,
+) -> Option<(Vec<amm_core::primitives::asset::AssetId>, Vec<u8>)> {
     let mut coins = Vec::new();
     let mut decimals = Vec::new();
     for id in ids {
         let coin = AssetId::new(id).ok()?;
         decimals.push(registry.get(&coin)?.decimals);
-        coins.push(coin);
+        coins.push(core_asset(&coin)?);
     }
     Some((coins, decimals))
 }
@@ -669,10 +692,11 @@ mod tests {
         assert_eq!(state.chains.len(), 2);
     }
 
-    /// V4 pool resolution sorts currencies by address and keeps each token's
-    /// decimals paired with it, regardless of the config order.
+    /// V4 pool resolution sorts currencies by address regardless of config order,
+    /// so `currency0 < currency1` before the pool id is derived.
     #[test]
-    fn resolve_v4_pool_sorts_currencies_and_pairs_decimals() {
+    fn resolve_v4_pool_sorts_currencies() {
+        use crate::adapters::exchanges::core_asset;
         use crate::primitives::asset::AssetMeta;
         use crate::settings::V4PoolSettings;
 
@@ -705,9 +729,15 @@ mod tests {
         let chain = ChainId::new("ethereum");
         let config = resolve_v4_pool(&chain, &pool, &registry).unwrap();
 
-        assert_eq!(config.token0, AssetId::new(low).unwrap());
-        assert_eq!(config.decimals0, 6);
-        assert_eq!(config.token1, AssetId::new(high).unwrap());
-        assert_eq!(config.decimals1, 18);
+        assert_eq!(
+            config.token0,
+            core_asset(&AssetId::new(low).unwrap()).unwrap()
+        );
+        assert_eq!(
+            config.token1,
+            core_asset(&AssetId::new(high).unwrap()).unwrap()
+        );
+        assert_eq!(config.fee, 500);
+        assert_eq!(config.tick_spacing, 10);
     }
 }

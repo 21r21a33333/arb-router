@@ -674,11 +674,24 @@ name = "amm-core"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "curve-math",
  "num-bigint",
  "num-rational",
  "num-traits",
  "thiserror",
  "uniswap_v3_math",
+]
+
+[[package]]
+name = "amm-rpc"
+version = "0.1.0"
+dependencies = [
+ "alloy",
+ "amm-core",
+ "async-trait",
+ "curve-adapter",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -697,6 +710,7 @@ dependencies = [
  "alloy",
  "alloy-primitives",
  "amm-core",
+ "amm-rpc",
  "arc-swap",
  "async-trait",
  "axum",

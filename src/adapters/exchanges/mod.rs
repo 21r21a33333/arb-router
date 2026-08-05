@@ -1,40 +1,19 @@
-//! DEX exchange adapters, grouped by protocol family.
+//! The exchange layer.
 //!
-//! Helpers **universal to every exchange family** live here: the base-unit
-//! `Amount` ↔ `U256` conversion used by quoters, plus the discover/refresh
-//! plumbing (`call`, `read_err`, address parsing) shared by every `Exchange`
-//! adapter. Family-specific plumbing lives in that family's module: [`uniswap`]
-//! (2-asset AMMs: V2/V3/V4) and [`curve`] (N-asset stableswap / crypto).
+//! arb-router no longer implements its own on-chain fetch/decode or swap math;
+//! it imports `amm-rs`. [`amm_rpc`] adapts `amm-rpc`'s `StateSource` sources into
+//! arb-router's `Exchange` port. The helpers here are the shared boundary: the
+//! base-unit `Amount` ↔ `U256` conversion and the arb-router ↔ `amm_core`
+//! `AssetId` bridge.
 
-pub mod aerodrome;
-pub mod curve;
-pub mod uniswap;
-
-#[cfg(test)]
-mod live;
+pub mod amm_rpc;
 
 use alloy_primitives::{Address, U256, keccak256};
 use amm_core::primitives::asset::{AssetId as CoreAssetId, ChainId as CoreChainId};
 use rust_decimal::Decimal;
 
-use crate::core::deps::chain_reader::ChainReadError;
 use crate::core::deps::exchange::ExchangeError;
 use crate::primitives::asset::{Amount, AssetId};
-use crate::primitives::chain::{Bytes, Call};
-use crate::primitives::pool::PoolKey;
-
-/// A `Call` to `target` carrying `calldata`.
-pub(crate) fn call(target: Address, calldata: Vec<u8>) -> Call {
-    Call {
-        target: target.to_string(),
-        calldata: Bytes(calldata),
-    }
-}
-
-/// Wrap a chain-read failure as an exchange read error.
-pub(crate) fn read_err(err: ChainReadError) -> ExchangeError {
-    ExchangeError::Read(err.to_string())
-}
 
 /// Parse the address out of an `AssetId` (`"chain:0x…"`).
 pub(crate) fn asset_address(asset: &AssetId) -> Result<Address, ExchangeError> {
@@ -46,13 +25,6 @@ pub(crate) fn asset_address(asset: &AssetId) -> Result<Address, ExchangeError> {
         .ok_or_else(|| {
             ExchangeError::Decode(format!("asset id `{}` is not `chain:0x…`", asset.as_str()))
         })
-}
-
-/// The pool address stored on a `PoolKey`, parsed.
-pub(crate) fn pool_address(key: &PoolKey) -> Result<Address, ExchangeError> {
-    key.address
-        .parse::<Address>()
-        .map_err(|_| ExchangeError::Decode(format!("pool address `{}`", key.address)))
 }
 
 /// Convert an `Amount` (base-unit integral Decimal) to `U256`.
