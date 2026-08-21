@@ -12,6 +12,7 @@ use crate::adapters::api::{self, ApiState};
 use crate::adapters::chain_reader::BlockReader;
 use crate::adapters::exchanges::amm_rpc::AmmRpcExchange;
 use crate::adapters::exchanges::{asset_address, core_asset};
+use crate::adapters::executor::amm_rpc::AmmRpcExecutor;
 use crate::adapters::notifier::{CompositeNotifier, LogNotifier, MemoryNotifier};
 use crate::adapters::pool_store::{ArcSwapPoolStore, SyncWorker};
 use crate::adapters::rpc::provider::{EthProvider, make_provider};
@@ -23,6 +24,7 @@ use crate::core::application::evaluation::detect::AssetRegistry;
 use crate::core::application::scanner::Scanner;
 use crate::core::deps::chain_reader::ChainReader;
 use crate::core::deps::exchange::Exchange;
+use crate::core::deps::executor::Executor;
 use crate::core::deps::notifier::Notifier;
 use crate::core::deps::pool_store::PoolStore;
 use crate::core::deps::valuation::Valuation;
@@ -30,6 +32,7 @@ use crate::primitives::asset::{AssetId, ChainId, Usd};
 use crate::primitives::opportunity::Opportunity;
 use crate::settings::{ChainSettings, CurveSettings, Settings, UniswapV4Settings};
 use amm_core::protocols::uniswap::v4::Hooks;
+use amm_rpc::execution::ChainConfig;
 use amm_rpc::protocols::aerodrome::AerodromeSource;
 use amm_rpc::protocols::curve::{CurvePoolConfig, CurveSource};
 use amm_rpc::protocols::slipstream::SlipstreamSource;
@@ -104,6 +107,7 @@ fn build_chain(c: &ChainSettings, s: &Services) -> eyre::Result<(SyncWorker, Arc
         tracked_tokens: parse_assets(&c.tracked_tokens)?,
         interval: Duration::from_millis(c.sync_interval_ms),
     };
+    let executor = build_executor(c, &chain);
     let scanner = Arc::new(Scanner {
         chain,
         pool_store: s.store.clone(),
@@ -115,8 +119,32 @@ fn build_chain(c: &ChainSettings, s: &Services) -> eyre::Result<(SyncWorker, Arc
             max_hops: c.max_hops,
             input_usd: Usd(c.input_usd),
         },
+        executor,
     });
     Ok((worker, scanner))
+}
+
+/// Build the calldata executor for a chain, or `None` if execution is not
+/// configured (no `executor_address`, an unparseable address, or no amm-rs
+/// preset for the chain).
+fn build_executor(c: &ChainSettings, chain: &ChainId) -> Option<Box<dyn Executor>> {
+    let sender: Address = c.executor_address.as_ref()?.parse().ok()?;
+    let chain_cfg = chain_preset(chain.as_str())?;
+    let slippage_bps = c.execution_slippage_bps.unwrap_or(30);
+    Some(Box::new(AmmRpcExecutor::new(
+        sender,
+        chain_cfg,
+        slippage_bps,
+    )))
+}
+
+/// The amm-rs [`ChainConfig`] preset for a chain namespace, if supported.
+fn chain_preset(chain: &str) -> Option<ChainConfig> {
+    match chain {
+        "ethereum" => Some(amm_rpc::execution::chains::ethereum()),
+        "base" => Some(amm_rpc::execution::chains::base()),
+        _ => None,
+    }
 }
 
 /// Build shared services and spawn a sync + scan loop per chain, returning the

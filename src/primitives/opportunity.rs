@@ -1,4 +1,5 @@
 use crate::primitives::asset::{Amount, AssetId, ChainId, Pair, Usd};
+use crate::primitives::execution::ExecutionPlan;
 use crate::primitives::pool::PoolId;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,6 +66,10 @@ pub struct Opportunity {
     pub roi_bps: u32,
     pub detected_at: time::OffsetDateTime,
     pub worst_pool_synced_at: time::OffsetDateTime,
+    /// Sign-ready transactions to capture this opportunity, when an executor is
+    /// configured and the build succeeds; `None` otherwise (execution is a
+    /// best-effort enrichment and never affects detection).
+    pub execution: Option<ExecutionPlan>,
 }
 
 #[cfg(test)]

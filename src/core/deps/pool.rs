@@ -5,6 +5,11 @@ pub trait Pool: Send + Sync {
     fn id(&self) -> PoolId;
     fn assets(&self) -> &[AssetId];
     fn quote(&self, pair: &Pair, amount_in: Amount) -> Option<Amount>;
+
+    /// Downcast hook so an adapter (e.g. the executor) can recover the concrete
+    /// pool type — used to reach the underlying `amm-core` pool for calldata
+    /// building without leaking `amm-rs` types into this port.
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 #[cfg(test)]
@@ -29,6 +34,10 @@ mod tests {
 
         fn quote(&self, _pair: &Pair, amount_in: Amount) -> Option<Amount> {
             Some(Amount(amount_in.0 * self.rate))
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
         }
     }
 

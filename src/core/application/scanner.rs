@@ -16,6 +16,7 @@ use crate::core::application::evaluation::rank::rank_and_dedup;
 use crate::core::application::evaluation::validation::{is_fresh, worst_synced_at};
 use crate::core::application::graph::Graph;
 use crate::core::application::graph::finder::find_paths;
+use crate::core::deps::executor::Executor;
 use crate::core::deps::notifier::{Notifier, NotifyError};
 use crate::core::deps::pool_store::{PoolSnapshot, PoolStore};
 use crate::core::deps::valuation::Valuation;
@@ -36,6 +37,9 @@ pub struct Scanner<S: PoolStore, V: Valuation, N: Notifier> {
     pub notifier: Arc<N>,
     pub registry: AssetRegistry,
     pub cfg: EngineConfig,
+    /// Builds sign-ready calldata for ranked opportunities. `None` when no
+    /// executor is configured for this chain (execution is left off).
+    pub executor: Option<Box<dyn Executor>>,
 }
 
 impl<S: PoolStore, V: Valuation, N: Notifier> Scanner<S, V, N> {
@@ -63,7 +67,14 @@ impl<S: PoolStore, V: Valuation, N: Notifier> Scanner<S, V, N> {
             .flatten()
             .collect();
 
-        let ranked = rank_and_dedup(opps);
+        let mut ranked = rank_and_dedup(opps);
+        // Enrich the served set with sign-ready calldata. Best-effort: a build
+        // failure leaves `execution: None` and never fails the tick.
+        if let Some(executor) = &self.executor {
+            for opp in &mut ranked {
+                opp.execution = executor.build(opp, &snapshot).ok();
+            }
+        }
         let count = ranked.len();
         self.notifier.notify(&self.chain, &ranked).await?;
         Ok(count)
@@ -128,6 +139,7 @@ impl<S: PoolStore, V: Valuation, N: Notifier> Scanner<S, V, N> {
                 profit_usd,
                 roi_bps,
                 detected_at: now,
+                execution: None,
             }),
         }
     }
@@ -216,6 +228,7 @@ mod tests {
             notifier: notifier.clone(),
             registry: registry(),
             cfg,
+            executor: None,
         };
 
         let emitted = scanner.scan_once().await.unwrap();
@@ -229,5 +242,60 @@ mod tests {
         assert_eq!(opp.input, Amount(Decimal::from(1000)));
         assert_eq!(opp.output, Amount(Decimal::from(1100)));
         assert_eq!(opp.profit_usd, Some(Usd(Decimal::from(100))));
+        // No executor configured → no calldata attached.
+        assert!(opp.execution.is_none());
+    }
+
+    /// A configured executor enriches each ranked opportunity with calldata.
+    #[tokio::test]
+    async fn attaches_execution_when_executor_present() {
+        use crate::core::deps::executor::{Executor, ExecutorError};
+        use crate::primitives::execution::{ExecutionPlan, ExecutionTx};
+
+        struct StubExecutor;
+        impl Executor for StubExecutor {
+            fn build(
+                &self,
+                _opp: &Opportunity,
+                _snapshot: &PoolSnapshot,
+            ) -> Result<ExecutionPlan, ExecutorError> {
+                Ok(ExecutionPlan {
+                    atomic: true,
+                    transactions: vec![ExecutionTx {
+                        to: "0xrouter".into(),
+                        data: "0xabcd".into(),
+                        value: "0".into(),
+                        approval: None,
+                    }],
+                })
+            }
+        }
+
+        let snapshot = fake_snapshot(vec![
+            FakePool::new("p1", &["ethereum:a", "ethereum:b"], Decimal::new(11, 1)),
+            FakePool::new("p2", &["ethereum:a", "ethereum:b"], Decimal::ONE),
+        ]);
+        let notifier = Arc::new(RecordingNotifier::default());
+        let mut cfg = EngineConfig::new(vec![asset("ethereum:a")]);
+        cfg.max_hops = 4;
+
+        let scanner = Scanner {
+            chain: ChainId::new("ethereum"),
+            pool_store: Arc::new(StaticPoolStore(snapshot)),
+            valuation: Arc::new(FakeValuation::new(&[
+                ("ethereum:a", Usd(Decimal::ONE)),
+                ("ethereum:b", Usd(Decimal::new(5, 1))),
+            ])),
+            notifier: notifier.clone(),
+            registry: registry(),
+            cfg,
+            executor: Some(Box::new(StubExecutor)),
+        };
+
+        scanner.scan_once().await.unwrap();
+        let recorded = notifier.recorded();
+        let plan = recorded[0].execution.as_ref().expect("execution attached");
+        assert!(plan.atomic);
+        assert_eq!(plan.transactions.len(), 1);
     }
 }

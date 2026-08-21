@@ -119,6 +119,7 @@ mod tests {
             roi_bps: 100,
             detected_at: OffsetDateTime::UNIX_EPOCH,
             worst_pool_synced_at: OffsetDateTime::UNIX_EPOCH,
+            execution: None,
         }
     }
 
