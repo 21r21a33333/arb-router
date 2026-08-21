@@ -72,6 +72,7 @@ mod tests {
             roi_bps: roi,
             detected_at: OffsetDateTime::UNIX_EPOCH,
             worst_pool_synced_at: OffsetDateTime::UNIX_EPOCH,
+            execution: None,
         }
     }
 

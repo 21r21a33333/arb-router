@@ -60,6 +60,9 @@ mod tests {
         fn quote(&self, _pair: &Pair, amount_in: Amount) -> Option<Amount> {
             Some(amount_in)
         }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
     }
 
     fn snapshot_with(ages: &[(&str, i64)], now: OffsetDateTime) -> PoolSnapshot {

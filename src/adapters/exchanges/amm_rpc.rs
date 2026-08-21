@@ -34,7 +34,7 @@ pub struct AmmCorePool {
 impl AmmCorePool {
     /// Wrap an amm-core pool, deriving arb-router assets from it by re-namespacing
     /// each token address under `chain` (the chain name).
-    fn new(chain: &str, inner: Box<dyn CorePool>) -> Self {
+    pub(crate) fn new(chain: &str, inner: Box<dyn CorePool>) -> Self {
         let assets = inner
             .assets()
             .iter()
@@ -45,6 +45,12 @@ impl AmmCorePool {
             assets,
             inner,
         }
+    }
+
+    /// The wrapped `amm-core` pool, borrowed for calldata building by the
+    /// executor adapter (which recovers this type via [`Pool::as_any`]).
+    pub(crate) fn core(&self) -> &dyn CorePool {
+        self.inner.as_ref()
     }
 }
 
@@ -69,6 +75,10 @@ impl Pool for AmmCorePool {
             true => None,
             false => u256_to_amount(out.raw),
         }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

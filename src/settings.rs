@@ -65,6 +65,15 @@ pub struct ChainSettings {
     pub start_assets: Vec<String>,
     /// Tokens pool discovery ranges over.
     pub tracked_tokens: Vec<String>,
+    /// Address the executor sends from and returns arb output to. When set (and
+    /// an amm-rs chain preset exists for this chain), ranked opportunities are
+    /// enriched with sign-ready calldata. Unset leaves execution off.
+    #[serde(default)]
+    pub executor_address: Option<String>,
+    /// Slippage tolerance (bps) applied to each span's minimum output.
+    /// Defaults to 30 bps.
+    #[serde(default)]
+    pub execution_slippage_bps: Option<u16>,
     /// Uniswap V3 deployment on this chain, if present.
     #[serde(default)]
     pub uniswap_v3: Option<UniswapV3Settings>,

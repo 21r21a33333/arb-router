@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::adapters::notifier::MemoryNotifier;
 use crate::core::deps::pool_store::PoolStore;
 use crate::primitives::asset::ChainId;
+use crate::primitives::execution::ExecutionPlan;
 use crate::primitives::opportunity::Opportunity;
 
 /// Everything the handlers read from.
@@ -97,6 +98,10 @@ struct OpportunityView {
     roi_bps: u32,
     detected_at: i64,
     worst_pool_synced_at: i64,
+    /// Sign-ready transactions to capture the opportunity, when an executor is
+    /// configured; omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution: Option<ExecutionPlan>,
 }
 
 impl From<&Opportunity> for OpportunityView {
@@ -110,6 +115,7 @@ impl From<&Opportunity> for OpportunityView {
             roi_bps: opp.roi_bps,
             detected_at: opp.detected_at.unix_timestamp(),
             worst_pool_synced_at: opp.worst_pool_synced_at.unix_timestamp(),
+            execution: opp.execution.clone(),
         }
     }
 }
@@ -152,6 +158,7 @@ mod tests {
             roi_bps: 100,
             detected_at: OffsetDateTime::UNIX_EPOCH,
             worst_pool_synced_at: OffsetDateTime::UNIX_EPOCH,
+            execution: None,
         }
     }
 

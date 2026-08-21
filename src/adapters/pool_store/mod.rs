@@ -176,6 +176,9 @@ mod tests {
         fn quote(&self, _pair: &Pair, amount_in: Amount) -> Option<Amount> {
             Some(amount_in)
         }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
     }
 
     /// Discovers one USDC/WETH pool and refreshes it into a `StubPool`.

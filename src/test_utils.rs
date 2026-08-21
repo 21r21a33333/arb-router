@@ -62,6 +62,10 @@ impl Pool for FakePool {
             false => None,
         }
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// Wrap pools in a snapshot stamped fresh at the current time.
